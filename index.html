@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d0f0c" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#0d0f0c">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="デイリー任務">
+  <meta name="application-name" content="デイリー任務">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="description" content="Tarkov風デイリー任務デモ — タスク・会話・買い物・服薬">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
+  <title>デイリー任務</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="app-header">
+    <h1><span>TASKS</span> // デイリー任務</h1>
+    <div class="header-actions">
+      <button class="btn btn-icon btn-mute" id="btnMute" title="SEミュート">🔊</button>
+      <button class="btn btn-icon" id="btnSettings" title="設定">⚙</button>
+    </div>
+  </header>
+
+  <!-- TASKS -->
+  <section class="screen active" data-screen="tasks" id="screenTasks">
+    <div class="screen-body">
+      <div id="taskList"></div>
+      <div id="taskDetail"></div>
+    </div>
+  </section>
+
+  <!-- CHAT -->
+  <section class="screen chat-screen" data-screen="chat" id="screenChat">
+    <div class="screen-body">
+      <div class="chat-log" id="chatLog"></div>
+      <div class="chat-input-bar">
+        <input type="text" id="chatInput" placeholder="例: 明日15時に歯医者" autocomplete="off">
+        <button class="btn btn-primary" id="chatSend">送信</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- SHOPPING -->
+  <section class="screen" data-screen="shop" id="screenShop">
+    <div class="screen-body">
+      <div class="section-title">買い物リスト</div>
+      <div class="hint">チェックしたアイテムは「納品化」で購入品の納品タスクに変換できます。</div>
+      <div class="add-row">
+        <input type="text" id="shopName" placeholder="アイテム名">
+        <input type="number" id="shopQty" value="1" min="1" style="flex:0 0 64px">
+        <button class="btn btn-primary" id="btnAddShop">追加</button>
+      </div>
+      <div id="shopList"></div>
+    </div>
+  </section>
+
+  <!-- MEDICATION -->
+  <section class="screen" data-screen="med" id="screenMed">
+    <div class="screen-body">
+      <div class="section-title">服薬アシスト
+        <span>
+          <button class="btn btn-sm" id="btnNotifPerm">通知許可</button>
+          <button class="btn btn-sm btn-primary" id="btnAddMed">＋ 薬</button>
+        </span>
+      </div>
+      <div class="hint">アプリを開いている間のみ Notification API でリマインドします。バックグラウンド通知には将来サーバー／Push が必要です。</div>
+      <div class="med-next" id="medNext" style="display:none"></div>
+      <div id="medList"></div>
+    </div>
+  </section>
+
+  <nav class="tab-bar" role="tablist">
+    <button class="tab-btn active" data-tab="tasks"><span class="ico">◈</span>任務</button>
+    <button class="tab-btn" data-tab="chat"><span class="ico">💬</span>会話</button>
+    <button class="tab-btn" data-tab="shop"><span class="ico">🛒</span>買い物</button>
+    <button class="tab-btn" data-tab="med"><span class="ico">💊</span>服薬</button>
+  </nav>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Modal Main -->
+<div class="modal-backdrop" id="modalMain">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalMainTitle">メインタスク作成</h3>
+      <button class="btn btn-icon" data-close="modalMain">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group"><label>任務名</label><input id="mainTitle" maxlength="80"></div>
+      <div class="form-group"><label>発注者</label><input id="mainTrader" maxlength="40"></div>
+      <div class="form-group"><label>説明</label><textarea id="mainDesc" maxlength="300"></textarea></div>
+      <div class="form-group"><label>期限（任意）</label><input type="datetime-local" id="mainDeadline">
+        <div class="form-hint">受注後に期限超過かつ未完了だと失敗になります</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" data-close="modalMain">キャンセル</button>
+      <button class="btn btn-primary" id="btnSaveMain">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modalSub">
+  <div class="modal">
+    <div class="modal-header"><h3>サブタスク追加</h3><button class="btn btn-icon" data-close="modalSub">✕</button></div>
+    <div class="modal-body"><div class="form-group"><label>目標</label><input id="subTitle" maxlength="100"></div></div>
+    <div class="modal-footer">
+      <button class="btn" data-close="modalSub">キャンセル</button>
+      <button class="btn btn-primary" id="btnSaveSub">追加</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modalDelivery">
+  <div class="modal">
+    <div class="modal-header"><h3>納品タスク追加</h3><button class="btn btn-icon" data-close="modalDelivery">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>種別</label>
+        <select id="delType"><option value="deliverable">成果物</option><option value="purchase">購入品</option></select>
+      </div>
+      <div class="form-group"><label>アイテム名</label><input id="delName" maxlength="80"></div>
+      <div class="form-group"><label>数量</label><input type="number" id="delQty" value="1" min="1"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" data-close="modalDelivery">キャンセル</button>
+      <button class="btn btn-primary" id="btnSaveDel">追加</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modalMed">
+  <div class="modal">
+    <div class="modal-header"><h3>薬を登録</h3><button class="btn btn-icon" data-close="modalMed">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>薬名</label><input id="medName" placeholder="ビタミン"></div>
+      <div class="form-group"><label>用量</label><input id="medDose" placeholder="1錠"></div>
+      <div class="form-group"><label>時間（カンマ区切り）</label>
+        <input id="medTimes" placeholder="08:00, 夜">
+        <div class="form-hint">朝/昼/夜 は 08:00/12:00/20:00 に正規化（同じ時刻は1つ）</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" data-close="modalMed">キャンセル</button>
+      <button class="btn btn-primary" id="btnSaveMed">登録</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="modalSettings">
+  <div class="modal">
+    <div class="modal-header"><h3>設定 / データ</h3><button class="btn btn-icon" data-close="modalSettings">✕</button></div>
+    <div class="modal-body">
+      <div class="hint">ホーム画面に追加するには <strong>HTTPS</strong>（または localhost）で開いてください。iOS は「共有 → ホーム画面に追加」後、アイコンから起動すると通知が使えます（iOS 16.4+）。詳細は SCHEMA.md / PLAN.md。</div>
+      <div class="hint" id="dataLayerStatus">データ層: 読込中…</div>
+      <div class="form-group">
+        <label>エクスポート</label>
+        <button class="btn btn-primary" id="btnExport" style="width:100%">JSON を保存</button>
+      </div>
+      <div class="form-group">
+        <label>インポート（未確認レビューへ）</label>
+        <input type="file" id="importFile" accept="application/json,.json">
+      </div>
+      <div class="form-group">
+        <label>デモデータ</label>
+        <button class="btn btn-danger" id="btnResetDemo" style="width:100%">サンプルで初期化</button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" data-close="modalSettings">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<script src="./data/adapter.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

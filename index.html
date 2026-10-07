@@ -12,7 +12,7 @@
   <meta name="apple-mobile-web-app-title" content="デイリー任務">
   <meta name="application-name" content="デイリー任務">
   <meta name="format-detection" content="telephone=no">
-  <meta name="description" content="Tarkov風デイリー任務デモ — タスク・会話・買い物・服薬">
+  <meta name="description" content="Tarkov風デイリー任務デモ — 任務（服薬含む）・会話・買い物">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
@@ -63,26 +63,10 @@
     </div>
   </section>
 
-  <!-- MEDICATION -->
-  <section class="screen" data-screen="med" id="screenMed">
-    <div class="screen-body">
-      <div class="section-title">服薬アシスト
-        <span>
-          <button class="btn btn-sm" id="btnNotifPerm">通知許可</button>
-          <button class="btn btn-sm btn-primary" id="btnAddMed">＋ 薬</button>
-        </span>
-      </div>
-      <div class="hint">アプリを開いている間のみ Notification API でリマインドします。バックグラウンド通知には将来サーバー／Push が必要です。</div>
-      <div class="med-next" id="medNext" style="display:none"></div>
-      <div id="medList"></div>
-    </div>
-  </section>
-
   <nav class="tab-bar" role="tablist">
     <button class="tab-btn active" data-tab="tasks"><span class="ico">◈</span>任務</button>
     <button class="tab-btn" data-tab="chat"><span class="ico">💬</span>会話</button>
     <button class="tab-btn" data-tab="shop"><span class="ico">🛒</span>買い物</button>
-    <button class="tab-btn" data-tab="med"><span class="ico">💊</span>服薬</button>
   </nav>
 </div>
 
@@ -133,8 +117,9 @@
       <div class="form-group"><label>説明</label><textarea id="mainDesc" maxlength="300"></textarea></div>
       <div class="form-group"><label>場所（任意）</label><input id="mainLocation" maxlength="60" placeholder="例: 市役所"></div>
       <div class="form-group"><label>期限（任意）</label><input type="datetime-local" id="mainDeadline">
-        <div class="form-hint">受注後に期限超過かつ未完了だと失敗になります</div>
+        <div class="form-hint">受注後に期限超過かつ未完了だと失敗になります（残り時間をカウントダウン表示）</div>
       </div>
+      <div class="form-group"><label>報酬（任意）</label><textarea id="mainReward" maxlength="300" placeholder="未設定（報酬内容は別途決めて入力）"></textarea></div>
     </div>
     <div class="modal-footer">
       <button class="btn" data-close="modalMain">キャンセル</button>
@@ -145,8 +130,18 @@
 
 <div class="modal-backdrop" id="modalSub">
   <div class="modal">
-    <div class="modal-header"><h3>サブタスク追加</h3><button class="btn btn-icon" data-close="modalSub">✕</button></div>
-    <div class="modal-body"><div class="form-group"><label>目標</label><input id="subTitle" maxlength="100"></div></div>
+    <div class="modal-header"><h3>目標を追加</h3><button class="btn btn-icon" data-close="modalSub">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>種類</label>
+        <select id="subKind">
+          <option value="check">チェック（やる／やった）</option>
+          <option value="count">回数・数量（例: 4/4）</option>
+          <option value="item">必要物品・持ち物（揃えた）</option>
+        </select>
+      </div>
+      <div class="form-group"><label id="subTitleLabel">目標</label><input id="subTitle" maxlength="100"></div>
+      <div class="form-group" id="subTargetGroup"><label id="subTargetLabel">目標数</label><input type="number" id="subTarget" value="1" min="1" max="999" inputmode="numeric"></div>
+    </div>
     <div class="modal-footer">
       <button class="btn" data-close="modalSub">キャンセル</button>
       <button class="btn btn-primary" id="btnSaveSub">追加</button>
@@ -171,9 +166,28 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="modalMedSettings">
+  <div class="modal">
+    <div class="modal-header"><h3>服薬設定</h3><button class="btn btn-icon" data-close="modalMedSettings">✕</button></div>
+    <div class="modal-body">
+      <div class="med-settings-bar">
+        <span class="li-meta" id="notifPermState">通知: —</span>
+        <span>
+          <button class="btn btn-sm" id="btnNotifPerm">通知許可</button>
+          <button class="btn btn-sm btn-primary" id="btnAddMed">＋ 薬</button>
+        </span>
+      </div>
+      <div class="hint">服薬のチェックは任務タブの「服薬」任務で1回分ずつ行います。ここでは薬の登録・用量・時刻・通知を設定します。通知はアプリを開いている間のみ（バックグラウンド通知には将来サーバー／Push が必要）。</div>
+      <div class="med-next" id="medNext" style="display:none"></div>
+      <div id="medList"></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-primary" data-close="modalMedSettings">閉じる</button></div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="modalMed">
   <div class="modal">
-    <div class="modal-header"><h3>薬を登録</h3><button class="btn btn-icon" data-close="modalMed">✕</button></div>
+    <div class="modal-header"><h3 id="modalMedTitle">薬を登録</h3><button class="btn btn-icon" data-close="modalMed">✕</button></div>
     <div class="modal-body">
       <div class="form-group"><label>薬名</label><input id="medName" placeholder="ビタミン"></div>
       <div class="form-group"><label>用量</label><input id="medDose" placeholder="1錠"></div>
@@ -195,6 +209,10 @@
     <div class="modal-body">
       <div class="hint">ホーム画面に追加するには <strong>HTTPS</strong>（または localhost）で開いてください。iOS は「共有 → ホーム画面に追加」後、アイコンから起動すると通知が使えます（iOS 16.4+）。詳細は SCHEMA.md / PLAN.md。</div>
       <div class="hint" id="dataLayerStatus">データ層: 読込中…</div>
+      <div class="form-group">
+        <label>服薬</label>
+        <button class="btn" id="btnOpenMedSettings" style="width:100%">服薬設定（薬の登録・時刻・通知）</button>
+      </div>
       <div class="form-group">
         <label>エクスポート</label>
         <button class="btn btn-primary" id="btnExport" style="width:100%">JSON を保存</button>

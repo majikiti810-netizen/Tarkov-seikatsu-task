@@ -2,7 +2,7 @@
  * Scope: directory of this file (./). Keep all assets relative.
  * Bump CACHE_VERSION on every release so clients drop stale caches.
  */
-const CACHE_VERSION = 'v7-2026-10-07-chat-multi-daily';
+const CACHE_VERSION = 'v8-2026-10-07-tarkov-task-ui';
 const CACHE = 'daily-tasks-demo-' + CACHE_VERSION;
 
 const PRECACHE = [

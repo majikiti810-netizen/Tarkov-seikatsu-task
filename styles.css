@@ -98,7 +98,7 @@ body::before {
   bottom: 0; width: 100%; max-width: 520px;
   height: calc(var(--tab-h) + var(--safe-b));
   padding-bottom: var(--safe-b);
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(3, 1fr);
   background: var(--bg-panel); border-top: 1px solid var(--border);
   z-index: 50;
 }
@@ -137,8 +137,8 @@ body::before {
   margin-left: 4px; vertical-align: middle;
 }
 .status-pill.unaccepted { color: var(--text-dim); }
-.status-pill.in_progress { color: var(--olive-bright); border-color: var(--olive); }
-.status-pill.completed { color: var(--green-done); border-color: var(--green-done); }
+.status-pill.in_progress { color: var(--amber); border-color: var(--amber-dim); }
+.status-pill.completed { color: var(--text-dim); border-color: var(--border-lit); }
 .status-pill.failed { color: var(--red-bright); border-color: var(--red); }
 .status-pill.pending_review { color: var(--amber); border-color: var(--amber-dim); }
 .example-badge {
@@ -393,3 +393,161 @@ body::before {
 .chore-warn-msg {
   font-size: 16px; letter-spacing: 0.12em; padding: 14px 8px;
 }
+
+
+/* ===== Tarkov風 任務リスト / 詳細（v8） ===== */
+.list-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  margin: 12px 0 6px; flex-wrap: wrap;
+}
+.list-head-actions { display: flex; gap: 6px; }
+.list-count { color: var(--text-dim); margin-left: 6px; letter-spacing: 0.04em; }
+.btn-on { border-color: var(--olive); color: var(--olive-bright); }
+.group-head {
+  display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+  margin: 10px 0 6px; padding: 7px 10px;
+  background: linear-gradient(90deg, rgba(107,124,74,0.22), rgba(107,124,74,0.04));
+  border: 1px solid var(--border); border-left: 3px solid var(--olive);
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.1em; color: var(--text-bright);
+}
+.group-head.g-req { border-left-color: var(--amber); }
+.group-head.g-dl { border-left-color: var(--red); }
+.gh-chev { color: var(--olive-bright); width: 10px; }
+.gh-label { flex: 1; }
+.gh-count { color: var(--text-dim); font-size: 11px; }
+.empty.small { padding: 8px; font-size: 11px; }
+
+.task-card { padding: 9px 10px 8px; }
+.task-card.status-in_progress { border-left-color: var(--amber-dim); }
+.task-card.status-completed { border-left-color: var(--border-lit); opacity: 0.7; }
+.task-card.dl-amber { border-left-color: var(--amber); }
+.task-card.dl-red { border-left-color: var(--red-bright); border-color: rgba(196,90,74,0.55); background: rgba(168,72,58,0.08); }
+.task-card.active.dl-red { background: rgba(168,72,58,0.16); }
+.tc-row1 { display: flex; align-items: center; gap: 8px; }
+.tc-ico {
+  flex: 0 0 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; color: var(--olive-bright); border: 1px solid var(--border-lit); background: var(--bg-deep);
+}
+.task-card .tc-title { flex: 1; min-width: 0; margin: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; }
+.tc-status {
+  flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; font-weight: 700;
+}
+.st-in_progress { color: var(--amber); }
+.st-completed { color: var(--text-dim); }
+.st-unaccepted { color: var(--text-dim); font-weight: 400; }
+.st-failed { color: var(--red-bright); }
+.st-pending_review { color: var(--amber); }
+.tc-row2 {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  margin: 3px 0 0 30px;
+}
+.task-card .tc-meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-prog { display: flex; align-items: center; gap: 8px; margin: 6px 0 0 30px; }
+.tc-count { font-family: var(--font-mono); font-size: 11px; color: var(--amber); min-width: 34px; text-align: right; }
+
+/* カウントダウン（6日 18:29:59 / 期限切れ +00:12:03） */
+.cd {
+  flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap;
+}
+.cd-normal { color: var(--text); }
+.cd-amber { color: var(--amber); }
+.cd-red { color: var(--red-bright); font-weight: 700; }
+.cd-done { color: var(--text-dim); }
+.cd-big { font-size: 20px; letter-spacing: 0.06em; }
+
+/* ゲージ */
+.gauge {
+  flex: 1; height: 7px; min-width: 40px; background: #0a0c09;
+  border: 1px solid var(--border-lit); position: relative; overflow: hidden;
+}
+.gauge-fill {
+  height: 100%; background: linear-gradient(90deg, #6e6a55, #a8a389);
+  transition: width .25s;
+}
+.gauge.g-done .gauge-fill { background: linear-gradient(90deg, var(--olive-dim), var(--olive-bright)); }
+.gauge.g-failed .gauge-fill { background: var(--red); }
+
+/* 詳細ヘッダー */
+.detail-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.detail-topright { display: flex; align-items: center; gap: 10px; margin-left: auto; min-width: 0; }
+.detail-map {
+  font-size: 12px; color: var(--text-bright); padding: 3px 10px;
+  border: 1px solid var(--border-lit); background: rgba(0,0,0,0.35);
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.detail-map::before { content: "◎ "; color: var(--amber); }
+.btn-back { font-size: 10px; }
+.detail-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.detail-deadline {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px;
+  margin: 6px 0 8px; padding: 6px 10px; border: 1px solid var(--border); background: rgba(0,0,0,0.3);
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
+}
+.detail-deadline.dl-amber { border-color: var(--amber-dim); }
+.detail-deadline.dl-red { border-color: var(--red); background: rgba(168,72,58,0.15); }
+.dd-label { color: var(--text-dim); }
+.dd-at { margin-left: auto; }
+.dd-ok { color: var(--olive-bright); margin-left: 8px; }
+.dl-warn { letter-spacing: 0.12em; font-size: 12px; }
+.med-tools { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+.med-next-inline { font-family: var(--font-mono); font-size: 11px; color: var(--amber); }
+
+/* 目標行（中央寄せ: アイコン＋文＋ゲージ＋数） */
+.obj-section {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  margin: 12px 12px 4px; padding-bottom: 4px; border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; color: var(--olive);
+}
+.obj-section-count { color: var(--amber); display: flex; align-items: center; gap: 6px; }
+.obj-row {
+  margin: 5px 12px; padding: 9px 10px 8px;
+  background: linear-gradient(90deg, rgba(26,30,24,0.6), var(--bg-card) 30%, var(--bg-card) 70%, rgba(26,30,24,0.6));
+  border: 1px solid var(--border);
+}
+.obj-row.kind-check { cursor: pointer; }
+.obj-row.kind-check:active { background: var(--bg-card-hover); }
+.obj-row.done { border-color: var(--olive-dim); background: rgba(90,110,60,0.14); }
+.obj-row.done .obj-text { color: var(--text-dim); }
+.obj-row.late { border-color: var(--amber-dim); }
+.obj-line { display: flex; align-items: center; justify-content: center; gap: 8px; text-align: center; }
+.obj-line .obj-text { font-size: 13px; color: var(--text-bright); line-height: 1.35; }
+.obj-line .checkbox { width: 18px; height: 18px; pointer-events: none; }
+.obj-line .checkbox.checked::after { font-size: 11px; }
+.obj-ico { flex-shrink: 0; width: 18px; text-align: center; color: var(--olive-bright); font-size: 13px; }
+.ico-item { color: var(--amber); }
+.ico-del { color: var(--amber); }
+.obj-check { color: var(--olive-bright); font-weight: 700; }
+.obj-time { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); padding: 1px 5px; border: 1px solid var(--border); }
+.obj-time.late { color: var(--amber); border-color: var(--amber-dim); }
+.obj-line .obj-tag { margin-top: 0; }
+.obj-meter { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+.obj-count {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-bright);
+  min-width: 36px; text-align: right; font-variant-numeric: tabular-nums;
+}
+.obj-row.done .obj-count { color: var(--olive-bright); }
+.btn-step { min-width: 34px; padding: 5px 0; font-size: 15px; line-height: 1; }
+.btn-ready {
+  background: rgba(196,163,90,0.15); border-color: var(--amber-dim); color: var(--amber);
+  padding: 6px 10px; white-space: nowrap;
+}
+.btn-ready.is-done { background: rgba(107,124,74,0.2); border-color: var(--olive); color: var(--olive-bright); }
+.btn-x { padding: 4px 7px; border-color: var(--border); color: var(--text-dim); }
+.objectives.locked .obj-row .btn, .objectives.ro .obj-row .btn-step, .objectives.ro .obj-row .btn-ready { opacity: 0.35; pointer-events: none; }
+.objectives.locked .obj-row .btn-x { opacity: 1; pointer-events: auto; }
+.objectives.locked .obj-row, .objectives.ro .obj-row.kind-check { cursor: default; }
+.kind-delivery .obj-meter .btn-deliver { white-space: nowrap; }
+
+.reward-box {
+  margin: 4px 12px 6px; padding: 10px; border: 1px dashed var(--border-lit);
+  font-size: 13px; color: var(--text-bright); white-space: pre-line; background: rgba(0,0,0,0.25);
+}
+.reward-box.empty-reward { color: var(--text-dim); font-size: 12px; text-align: center; }
+
+/* 服薬設定シート */
+.med-settings-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.med-go { width: 100%; margin-bottom: 8px; padding: 10px; }
+.med-item .obj-body { flex: 1; }
+.med-times { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.time-chip { font-family: var(--font-mono); font-size: 10px; padding: 1px 6px; border: 1px solid var(--olive-dim); color: var(--olive-bright); }

@@ -37,8 +37,12 @@
   "source": "chat",
   "externalId": null,
   "status": "unaccepted",
+  "reward": "",
   "subs": [
-    { "title": "資料を印刷する", "done": false }
+    { "title": "資料を印刷する", "kind": "check", "target": 1, "current": 0, "done": false },
+    { "title": "印鑑", "kind": "item", "target": 1, "current": 0, "done": false },
+    { "title": "証明写真", "kind": "item", "target": 2, "current": 1, "done": false },
+    { "title": "スクワット", "kind": "count", "target": 4, "current": 4, "done": true }
   ],
   "deliveries": [
     { "name": "レビュー資料.pdf", "qty": 1, "type": "deliverable", "done": false },
@@ -59,12 +63,22 @@
 | `source` | string \| null | 由来: `"chat"` / `"manual"` / `"import"` / `"daily"` / 将来 `"calendar"` |
 | `externalId` | string \| null | 外部ID（将来: カレンダーのイベントID。重複取り込み防止用） |
 | `status` | string | エクスポート時の状態。インポート時は常に `pending_review`（未確認）になる |
-| `subs` | SubTask[] | サブタスク |
+| `reward` | string | 報酬（任意・既定 `""`）。自由記述のみ。内容（外出報酬など）は別途ユーザーと決めて入力する。詳細の「報酬」欄に表示 |
+| `subs` | SubTask[] | 目標（Objective）。旧称サブタスク |
 | `deliveries` | Delivery[] | 納品タスク |
 
-### SubTask
+### SubTask（目標 / Objective）
 - `title` (string, 必須)
-- `done` (boolean, 既定 false)
+- `kind` (`"check"` \| `"count"` \| `"item"`, 既定 `"check"`)
+  - `check`: やる／やった（行タップで切替）。ゲージ 0/1 → 1/1
+  - `count`: 回数・数量。`current`/`target` を −／＋（ゲージのタップでも +1）で増減。例「ゴミ袋にまとめる 4/4 ✓」
+  - `item`: 必要物品・持ち物。「揃えた」ボタン（Tarkov の「引き渡す」相当、タップで戻せる）。`target>1` なら −／＋ も可
+- `target` (number ≥1, 既定 1) 目標数
+- `current` (number 0..target, 既定 0) 現在数
+- `done` (boolean, 既定 false) `current >= target` と同期（target=1 の check/item は `done` が基準）
+
+移行（v8 / 2026-10-07）: 既存のサブタスクは読込時に `kind:"check", target:1, current: done?1:0` を補完。タイトルが `持ち物: 〜` のものは `kind:"item"` にして接頭辞を外す。インポートも同じ規則。
+任務の進捗 = 達成した目標数（＋納品済み数）/ 全目標数（＋納品数）。一覧と詳細にゲージ表示。
 
 ### Delivery
 - `name` (string, 必須)
@@ -95,8 +109,22 @@
 | `name` | string | 薬名 |
 | `dose` | string | 用量表示 |
 | `times` | string[] | `"朝"` / `"昼"` / `"夜"` または `"HH:MM"` |
-| `linkToDailyTask` | boolean | 日次メインタスク「服薬」にサブタスクとして載せる |
+| `linkToDailyTask` | boolean | 互換用（現在は有効な薬はすべて「服薬」任務に載る） |
 | `enabled` | boolean | 有効フラグ |
+
+### 服薬の扱い（v8）
+服薬のチェックは**任務タブのシステム任務「服薬」**で行う（独立した服薬タブは廃止）。有効な薬の各時刻が1行の目標になる（例: `朝 コンサータ 27mg×2錠` / `08:00`、時刻順）。行タップで `medLog` に記録し、本日の進捗（例 1/3）を表示。予定時刻を過ぎた未服用は黄色で「時刻超過」。
+薬の登録・編集・削除・時刻・通知許可は「服薬」任務の「⚙ 薬を管理」または ⚙設定 →「服薬設定」のシートから。会話タブからの服薬登録も従来通り。
+`medLog`: `{ "YYYY-MM-DD": { "<medId>__HH:MM": true } }`（日替わりで自動的に未服用へ）
+
+### 期限（deadline）の表示
+期限付き任務は一覧・詳細に残り時間を `6日 18:29:59` / `20:11:55` 形式で1秒ごとに表示。24時間未満=黄、3時間未満=赤、超過=赤「期限切れ +HH:MM:SS」。受注中に期限を過ぎると従来通り失敗（fail SE）。
+
+### 任務一覧のグループ
+- 必須タスク: システム任務（服薬・入浴・洗濯・掃除・ゴミ出し）＋毎日の必須タスク
+- 期限付きタスク: `deadline` あり（期限の近い順）
+- その他
+各グループは見出しタップで折りたたみ、「完了を表示」で完了任務の表示切替（端末内の表示設定のみ・エクスポート対象外）。詳細右上に場所（未設定は「任意の場所」）。
 
 ## インポート時の挙動
 
@@ -145,7 +173,7 @@
 | 日時 | 今日・明日・明後日・(来週/今度)金曜・10/20・10月20日・20日 ＋ 10時 / 10:30 / 14時半 / 午後3時 | `MainTask.deadline`, `start` |
 | 期限 | 日付の直後の「まで(に)」「締切」「期限」、または「締切は〜」「期限は〜」 | `MainTask.deadline`（時刻なしは 23:59） |
 | 場所 | 役所/病院/駅/銀行/郵便局/学校/店/クリニック/歯科/セブン/ローソン… ＋ で/に/へ/まで。見出しが場所名だけでも可 | `MainTask.location` |
-| 持ち物 | 〜を持っていく / 持参 / 忘れずに〜 / 持ち物は〜、または任務行の直後の名詞だけの行 | サブタスク「持ち物: 〜」1件ずつ |
+| 持ち物 | 〜を持っていく / 持参 / 忘れずに〜 / 持ち物は〜、または任務行の直後の名詞だけの行 | 目標 `kind:"item"`（必要物品）1件ずつ |
 | 買うもの | 〜を買う / 購入 / 調達 / 補充 / 〜が切れた / なくなった | 買い物リスト（任務と同時も可） |
 | メモ | 〜さんと / 〜のため / その他の残り | `MainTask.desc` |
 

@@ -30,6 +30,11 @@
   let pendingPreview = null; // chat preview awaiting confirm
   let notifPermissionAsked = false;
   let medNotifTimers = [];
+  let editingMedId = null;
+  const SHOW_DONE_KEY = 'daily-tasks-demo-show-completed';
+  const COLLAPSE_KEY = 'daily-tasks-demo-collapsed-groups';
+  let showCompleted = localStorage.getItem(SHOW_DONE_KEY) !== '0';
+  let collapsedGroups = (() => { try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}') || {}; } catch (_) { return {}; } })();
 
   // ===== UTIL =====
   const uid = () => 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
@@ -128,17 +133,18 @@
 
   // ===== STATE =====
   function exampleState() {
-    return {
+    const tmr = new Date(); tmr.setDate(tmr.getDate() + 1); tmr.setHours(10, 0, 0, 0);
+    const st = {
       tasks: [
         {
           id: 'ex_m1', title: '朝の作戦準備', trader: 'Prapor風 / 自分',
           desc: '【サンプル】起床〜作業開始までの一連任務',
-          isExample: true, status: 'in_progress', deadline: null,
+          isExample: true, status: 'in_progress', deadline: null, reward: '',
           failSoundPlayed: false, acceptedAt: Date.now() - 3600000,
           subs: [
-            { id: 'ex_s1', title: 'アラームを止めて水を飲む', done: true },
-            { id: 'ex_s2', title: 'メールの未読を確認', done: false },
-            { id: 'ex_s3', title: '今日のカレンダーを開く', done: false }
+            { id: 'ex_s1', title: 'アラームを止めて水を飲む', kind: 'check', target: 1, current: 1, done: true },
+            { id: 'ex_s2', title: '水を飲む（コップ）', kind: 'count', target: 3, current: 1, done: false },
+            { id: 'ex_s3', title: '今日のカレンダーを開く', kind: 'check', target: 1, current: 0, done: false }
           ],
           deliveries: [
             { id: 'ex_d1', name: '朝食ログ', qty: 1, type: 'deliverable', done: false },
@@ -146,13 +152,25 @@
           ]
         },
         {
-          id: 'ex_m2', title: 'デスク・クリアランス', trader: 'Therapist風 / 自分',
-          desc: '【サンプル】受注前の任務',
-          isExample: true, status: 'unaccepted', deadline: null,
+          id: 'ex_m3', title: '住民票を取りに行く', trader: '自分',
+          desc: '【サンプル】期限付き・持ち物つき任務', location: '市役所',
+          isExample: true, status: 'unaccepted', deadline: tmr.toISOString(), reward: '',
           failSoundPlayed: false, acceptedAt: null,
           subs: [
-            { id: 'ex_s4', title: '机の上を片付ける', done: false },
-            { id: 'ex_s5', title: '明日のタスクを3つ書く', done: false }
+            { id: 'ex_s6', title: '印鑑', kind: 'item', target: 1, current: 0, done: false },
+            { id: 'ex_s7', title: '本人確認書類', kind: 'item', target: 1, current: 0, done: false },
+            { id: 'ex_s8', title: '窓口で住民票を受け取る', kind: 'check', target: 1, current: 0, done: false }
+          ],
+          deliveries: []
+        },
+        {
+          id: 'ex_m2', title: 'デスク・クリアランス', trader: 'Therapist風 / 自分',
+          desc: '【サンプル】受注前の任務',
+          isExample: true, status: 'unaccepted', deadline: null, reward: '',
+          failSoundPlayed: false, acceptedAt: null,
+          subs: [
+            { id: 'ex_s4', title: '机の上を片付ける', kind: 'check', target: 1, current: 0, done: false },
+            { id: 'ex_s5', title: '明日のタスクを書く', kind: 'count', target: 3, current: 0, done: false }
           ],
           deliveries: [
             { id: 'ex_d3', name: '週次メモ.md', qty: 1, type: 'deliverable', done: false }
@@ -190,6 +208,7 @@
       dailyRequired: [],
       dailyLog: {}
     };
+    return migrateObjectives(st);
   }
 
   function normalizeLoaded(p) {
@@ -210,6 +229,7 @@
     p.dailyRequired = Array.isArray(p.dailyRequired) ? p.dailyRequired : [];
     p.dailyLog = p.dailyLog || {};
     migrateMedications(p);
+    migrateObjectives(p);
     return p;
   }
 
@@ -267,10 +287,63 @@
 
   function getTask(id) { return state.tasks.find(t => t.id === id); }
 
+  // ===== OBJECTIVES（目標: check / count / item） =====
+  // subs[] = 目標。kind: 'check'（チェック） | 'count'（回数・数量 current/target） | 'item'（必要物品・持ち物）
+  // target 既定 1。target=1 の check/item は done が真実、count または target>1 は current が真実（done は current>=target に同期）
+  const OBJ_KINDS = ['check', 'count', 'item'];
+  function objTarget(o) {
+    const n = parseInt(o && o.target, 10);
+    return n > 0 ? Math.min(n, 9999) : 1;
+  }
+  function objUsesCount(o) { return !!o && (o.kind === 'count' || objTarget(o) > 1); }
+  function objCurrent(o) {
+    const tg = objTarget(o);
+    if (!objUsesCount(o)) return o && o.done ? 1 : 0;
+    const c = Number(o.current);
+    if (!Number.isFinite(c)) return o.done ? tg : 0;
+    return Math.max(0, Math.min(tg, Math.floor(c)));
+  }
+  function objDone(o) { return objCurrent(o) >= objTarget(o); }
+  function setObjCurrent(o, n) {
+    const tg = objTarget(o);
+    o.current = Math.max(0, Math.min(tg, Math.floor(Number(n) || 0)));
+    o.done = o.current >= tg;
+  }
+  function setObjDone(o, done) {
+    o.done = !!done;
+    o.current = done ? objTarget(o) : 0;
+  }
+  function normalizeObjective(o) {
+    if (!o || typeof o !== 'object') return o;
+    let title = String(o.title == null ? '' : o.title);
+    if (!OBJ_KINDS.includes(o.kind)) {
+      const m = title.match(/^持ち物[:：]\s*(.+)$/);
+      if (m) { o.kind = 'item'; title = m[1].trim(); } else o.kind = 'check';
+    }
+    o.title = title;
+    o.target = objTarget(o);
+    const cur = objUsesCount(o) && Number.isFinite(Number(o.current)) ? Number(o.current) : (o.done ? o.target : 0);
+    setObjCurrent(o, cur);
+    return o;
+  }
+  function migrateObjectives(st) {
+    (st.tasks || []).forEach(t => {
+      t.subs = Array.isArray(t.subs) ? t.subs : [];
+      t.deliveries = Array.isArray(t.deliveries) ? t.deliveries : [];
+      t.subs.forEach(normalizeObjective);
+      if (t.reward == null) t.reward = '';
+    });
+    return st;
+  }
+  function makeObjective(title, kind, target) {
+    return normalizeObjective({ id: uid(), title, kind: kind || 'check', target: target || 1, current: 0, done: false });
+  }
+
   function taskProgress(task) {
-    const items = [...(task.subs||[]), ...(task.deliveries||[])];
-    const total = items.length;
-    const done = items.filter(i => i.done).length;
+    const subs = task.subs || [];
+    const dels = task.deliveries || [];
+    const total = subs.length + dels.length;
+    const done = subs.filter(objDone).length + dels.filter(d => d.done).length;
     return { done, total, pct: total ? Math.round(done/total*100) : 0 };
   }
 
@@ -445,6 +518,25 @@
     return t;
   }
 
+  // 服薬は任務タブの「服薬」任務で1回分ずつチェックする（服薬設定は設定シート）
+  function medDoseRows() {
+    const rows = [];
+    state.medications.filter(m => m.enabled !== false).forEach(med => {
+      (med.times || []).forEach(t => {
+        const n = normalizeTimeLabel(t);
+        const slot = n.hhmm ? TIME_TO_SLOT[n.hhmm] : null;
+        rows.push({
+          key: medLogKey(med.id, n.key),
+          title: (slot ? slot + ' ' : '') + med.name + (med.dose ? ' ' + med.dose : ''),
+          hhmm: n.hhmm,
+          done: isMedTaken(med.id, n.key)
+        });
+      });
+    });
+    rows.sort((a, b) => String(a.hhmm || '99:99').localeCompare(String(b.hhmm || '99:99')));
+    return rows;
+  }
+
   function syncMedDailyTask() {
     if (!state.settings.medLinkDailyTask) {
       state.tasks = state.tasks.filter(t => !t.isMedDaily);
@@ -452,29 +544,18 @@
       return;
     }
     const task = ensureMedDailyTask();
-    const wanted = [];
-    state.medications.filter(m => m.enabled && m.linkToDailyTask !== false).forEach(med => {
-      (med.times || []).forEach(t => {
-        const n = normalizeTimeLabel(t);
-        wanted.push({
-          key: medLogKey(med.id, n.key),
-          title: med.name + ' ' + (med.dose || '') + ' @ ' + n.label,
-          done: isMedTaken(med.id, n.key)
-        });
-      });
+    task.desc = '本日の服薬（1回分ずつタップでチェック）。薬の登録・時刻・通知は「薬を管理」';
+    const byKey = {};
+    (task.subs || []).forEach(s => { if (s.medKey) byKey[s.medKey] = s; });
+    task.subs = medDoseRows().map(w => {
+      const prev = byKey[w.key];
+      return {
+        id: prev ? prev.id : uid(), title: w.title, kind: 'check', target: 1,
+        current: w.done ? 1 : 0, done: w.done, medKey: w.key, medTime: w.hhmm
+      };
     });
-    // rebuild subs preserving ids where possible
-    const byTitle = {};
-    task.subs.forEach(s => { byTitle[s.title] = s; });
-    task.subs = wanted.map(w => {
-      const prev = byTitle[w.title];
-      return { id: prev ? prev.id : uid(), title: w.title, done: w.done, medKey: w.key };
-    });
-    if (task.status === 'unaccepted') task.status = 'in_progress';
-    syncCompletion(task);
-    if (task.status === 'completed' && !objectivesComplete(task)) task.status = 'in_progress';
-    if (objectivesComplete(task) && task.subs.length) task.status = 'completed';
-    else if (task.status === 'completed') task.status = 'in_progress';
+    task.deadline = null;
+    task.status = (task.subs.length && objectivesComplete(task)) ? 'completed' : 'in_progress';
     save();
   }
 
@@ -985,8 +1066,8 @@
     }
     if (p.kind === 'medication') return applyMedication(p);
     if (p.kind === 'main_task') {
-      const subs = (p.bring || []).map(it => ({ id: uid(), title: '持ち物: ' + it, done: false }));
-      subs.push({ id: uid(), title: '実施する', done: false });
+      const subs = (p.bring || []).map(it => makeObjective(it, 'item'));
+      subs.push(makeObjective('実施する', 'check'));
       const descParts = [];
       if (p.memo) descParts.push('メモ: ' + p.memo);
       if ((p.buy || []).length) descParts.push('買うもの: ' + p.buy.join('、') + (p.buyHint ? '（' + p.buyHint + '）' : '') + ' → 買い物リスト');
@@ -996,7 +1077,7 @@
         deadline: p.deadline, location: p.location || '',
         // カレンダー取り込み互換フィールド（将来: source:'calendar', externalId）
         start: p.start || null, end: null, source: 'chat', externalId: null,
-        failSoundPlayed: false, acceptedAt: null,
+        failSoundPlayed: false, acceptedAt: null, reward: '',
         subs,
         deliveries: []
       };
@@ -1030,7 +1111,7 @@
         };
         state.tasks.push(inbox);
       }
-      inbox.subs.push({ id: uid(), title: p.title, done: false });
+      inbox.subs.push(makeObjective(p.title, 'check'));
       if (inbox.status === 'completed') inbox.status = 'in_progress';
       selectedId = inbox.id;
       return 'ToDo1件';
@@ -1067,8 +1148,8 @@
           desc: '', deadline: null, location: def.location || '',
           status: 'in_progress', failSoundPlayed: false, acceptedAt: Date.now(),
           source: 'daily', externalId: null, start: null, end: null,
-          subs: [{ id: uid(), title: subTitle, done: false, isDailySub: true }]
-            .concat((def.bring || []).map(b => ({ id: uid(), title: '持ち物: ' + b, done: false }))),
+          subs: [Object.assign(makeObjective(subTitle, 'check'), { isDailySub: true })]
+            .concat((def.bring || []).map(b => makeObjective(b, 'item'))),
           deliveries: []
         };
         state.tasks.push(t);
@@ -1082,7 +1163,7 @@
           state.dailyLog[prev] = state.dailyLog[prev] || {};
           if (state.dailyLog[prev][def.id] === undefined) state.dailyLog[prev][def.id] = objectivesComplete(t);
         }
-        (t.subs || []).forEach(s => { s.done = false; });
+        (t.subs || []).forEach(s => setObjDone(s, false));
         t.dayKey = today;
         t.status = 'in_progress';
         t.failSoundPlayed = false;
@@ -1108,7 +1189,10 @@
         start: t.start || null, end: t.end || null,
         source: t.source || null, externalId: t.externalId || null,
         status: t.status,
-        subs: (t.subs||[]).map(s => ({ title: s.title, done: !!s.done })),
+        reward: t.reward || '',
+        subs: (t.subs||[]).map(s => ({
+          title: s.title, kind: s.kind || 'check', target: objTarget(s), current: objCurrent(s), done: objDone(s)
+        })),
         deliveries: (t.deliveries||[]).map(d => ({
           name: d.name, qty: d.qty || 1, type: d.type || 'deliverable', done: !!d.done
         }))
@@ -1142,7 +1226,10 @@
         failSoundPlayed: false,
         acceptedAt: null,
         isExample: false,
-        subs: (mt.subs || []).map(s => ({ id: uid(), title: s.title || '目標', done: false })),
+        reward: mt.reward ? String(mt.reward) : '',
+        subs: (mt.subs || []).map(s => normalizeObjective({
+          id: uid(), title: s.title || '目標', kind: s.kind, target: s.target || 1, current: 0, done: false
+        })),
         deliveries: (mt.deliveries || []).map(d => ({
           id: uid(), name: d.name || 'アイテム', qty: d.qty || 1,
           type: d.type === 'purchase' ? 'purchase' : 'deliverable', done: false
@@ -1201,11 +1288,165 @@
     if (name === 'med') renderMed();
   }
 
+  // ===== COUNTDOWN（期限: 残り 日 + HH:MM:SS） =====
+  const pad2 = n => String(n).padStart(2, '0');
+  function fmtDuration(ms) {
+    const s = Math.floor(Math.abs(ms) / 1000);
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return (d > 0 ? d + '日 ' : '') + pad2(h) + ':' + pad2(m) + ':' + pad2(sec);
+  }
+  // 通常 / 24時間未満=amber / 3時間未満・期限切れ=red
+  function countdownInfo(iso, now) {
+    const dl = Date.parse(iso);
+    if (isNaN(dl)) return null;
+    const r = dl - (now || Date.now());
+    if (r <= 0) return { text: '期限切れ +' + fmtDuration(r), level: 'red', over: true };
+    return { text: fmtDuration(r), level: r < 3 * 3600e3 ? 'red' : r < 24 * 3600e3 ? 'amber' : 'normal', over: false };
+  }
+  function deadlineLevel(task) {
+    if (!task.deadline || effectiveStatus(task) === 'completed') return '';
+    const ci = countdownInfo(task.deadline);
+    return ci ? ci.level : '';
+  }
+  function countdownHtml(task) {
+    if (!task.deadline) return '';
+    if (effectiveStatus(task) === 'completed') return `<span class="cd cd-done">期限 ${esc(formatDeadline(task.deadline) || '')}</span>`;
+    const ci = countdownInfo(task.deadline);
+    if (!ci) return '';
+    return `<span class="cd cd-${ci.level}" data-cd="${esc(task.deadline)}">${esc(ci.text)}</span>`;
+  }
+  function tickCountdowns() {
+    let crossed = false;
+    document.querySelectorAll('[data-cd]').forEach(el => {
+      const ci = countdownInfo(el.getAttribute('data-cd'));
+      if (!ci) return;
+      if (el.textContent !== ci.text) el.textContent = ci.text;
+      const cls = 'cd cd-' + ci.level + (el.classList.contains('cd-big') ? ' cd-big' : '');
+      if (el.className !== cls) el.className = cls;
+      const row = el.closest('[data-dl-row]');
+      if (row) { row.classList.toggle('dl-amber', ci.level === 'amber'); row.classList.toggle('dl-red', ci.level === 'red'); }
+      if (ci.over) crossed = true;
+    });
+    if (crossed && checkDeadlines() && activeScreen() === 'tasks' && !anyModalOpen()) renderTasks();
+  }
+  function activeScreen() { return document.querySelector('.screen.active')?.dataset.screen || ''; }
+  function anyModalOpen() { return !!document.querySelector('.modal-backdrop.show'); }
+
+  // ===== TASK LIST / DETAIL =====
+  function taskIcon(t) {
+    if (t.isMedDaily) return '✚';
+    if (t.isBathDaily) return '≋';
+    if (t.isLaundryDaily || t.isCleanDaily || t.isTrashDaily) return '⟲';
+    if (t.isDailyRequired) return '↻';
+    if (t.isInbox) return '▤';
+    if (t.deadline) return '◷';
+    return '◈';
+  }
+  function taskGroup(t) {
+    if (isSystemTask(t) || t.isDailyRequired) return 'req';
+    if (t.deadline) return 'dl';
+    return 'other';
+  }
+  const GROUPS = [['req', '必須タスク'], ['dl', '期限付きタスク'], ['other', 'その他']];
+  const STATUS_ORDER = { in_progress: 0, unaccepted: 1, failed: 2, completed: 3 };
+  function gaugeHtml(cur, total, cls) {
+    const pct = total ? Math.round(cur / total * 100) : 0;
+    return `<div class="gauge ${cls || ''}"><div class="gauge-fill" style="width:${pct}%"></div></div>`;
+  }
+  function medNextLabel() {
+    const n = nextDoseInfo();
+    if (!n) return '';
+    return '次: ' + (n.n.hhmm || n.n.label) + ' ' + n.med.name;
+  }
+
+  function taskCardHtml(t) {
+    const st = effectiveStatus(t);
+    const p = taskProgress(t);
+    const lvl = deadlineLevel(t);
+    const meta = [esc(t.trader || '—')];
+    if (t.location) meta.push('◎ ' + esc(t.location));
+    if (t.isMedDaily && st !== 'completed') { const nx = medNextLabel(); if (nx) meta.push(esc(nx)); }
+    return `<div class="task-card status-${st} ${t.id===selectedId?'active':''} ${lvl==='amber'?'dl-amber':''} ${lvl==='red'?'dl-red':''}" data-select="${t.id}" ${t.deadline?'data-dl-row':''}>
+      <div class="tc-row1">
+        <span class="tc-ico">${taskIcon(t)}</span>
+        <span class="tc-title">${esc(t.title)}${t.isExample?'<span class="example-badge">サンプル</span>':''}${t.isDailyRequired&&st!=='completed'?'<span class="status-pill pending_review">毎日必須</span>':''}</span>
+        <span class="tc-status st-${st}">${STATUS_LABEL[st]}</span>
+      </div>
+      <div class="tc-row2">
+        <span class="tc-meta">${meta.join(' · ')}</span>
+        ${countdownHtml(t)}
+      </div>
+      <div class="tc-prog">${gaugeHtml(p.done, p.total, st === 'completed' ? 'g-done' : st === 'failed' ? 'g-failed' : '')}<span class="tc-count">${p.done}/${p.total}</span></div>
+    </div>`;
+  }
+
+  function canEditObjectives(task) {
+    const st = effectiveStatus(task);
+    if (st === 'in_progress') return true;
+    // 日次（服薬・入浴・家事・毎日の必須）は完了後もチェックを戻せる
+    return st === 'completed' && (isSystemTask(task) || task.isDailyRequired);
+  }
+
+  function objRowHtml(task, s, st, editable) {
+    const tg = objTarget(s), cur = objCurrent(s), done = cur >= tg;
+    const isSys = isSystemTask(task);
+    const canDel = (st === 'in_progress' || st === 'unaccepted') && !isSys;
+    const kind = s.kind || 'check';
+    let ico = '', text = esc(s.title), extra = '', action = '';
+    let late = false;
+    if (task.isMedDaily && s.medTime && !done) {
+      const now = new Date();
+      late = (pad2(now.getHours()) + ':' + pad2(now.getMinutes())) > s.medTime;
+    }
+    if (kind === 'item') {
+      ico = '<span class="obj-ico ico-item">▣</span>';
+      if (tg > 1) {
+        action = `<button class="btn btn-step" data-obj-dec="${s.id}" ${cur<=0?'disabled':''}>−</button><button class="btn btn-step" data-obj-inc="${s.id}" ${done?'disabled':''}>＋</button>`;
+      }
+      action += done
+        ? `<button class="btn btn-ready is-done" data-obj-unready="${s.id}" title="タップで戻す">✓ 揃えた</button>`
+        : `<button class="btn btn-ready" data-obj-ready="${s.id}">揃えた</button>`;
+    } else if (kind === 'count') {
+      ico = '<span class="obj-ico ico-count">≡</span>';
+      action = `<button class="btn btn-step" data-obj-dec="${s.id}" ${cur<=0?'disabled':''}>−</button><button class="btn btn-step" data-obj-inc="${s.id}" ${done?'disabled':''}>＋</button>`;
+    } else {
+      ico = `<span class="checkbox ${done?'checked':''}"></span>`;
+    }
+    if (task.isMedDaily && s.medTime) extra = `<span class="obj-time ${late?'late':''}">${esc(s.medTime)}${late?' 時刻超過':''}</span>`;
+    const rowAttr = kind === 'check' ? `data-toggle-sub="${s.id}"` : '';
+    const gaugeAttr = kind === 'count' && !done ? `data-obj-inc="${s.id}"` : '';
+    return `<div class="obj-row kind-${kind} ${done?'done':''} ${late?'late':''} ${editable?'':'ro'}" ${rowAttr}>
+      <div class="obj-line">${ico}<span class="obj-text">${text}</span>${extra}${done?'<span class="obj-check">✓</span>':''}</div>
+      <div class="obj-meter">
+        <div class="gauge ${done?'g-done':''}" ${gaugeAttr}><div class="gauge-fill" style="width:${Math.round(cur/tg*100)}%"></div></div>
+        <span class="obj-count">${cur}/${tg}</span>
+        ${action}
+        ${canDel?`<button class="btn btn-sm btn-x" data-del-sub="${s.id}" title="削除">✕</button>`:''}
+      </div>
+    </div>`;
+  }
+
+  function deliveryRowHtml(task, d, st) {
+    const qty = Math.max(1, parseInt(d.qty, 10) || 1);
+    const cur = d.done ? qty : 0;
+    const canDel = st === 'in_progress' || st === 'unaccepted';
+    return `<div class="obj-row kind-delivery ${d.done?'done':''}">
+      <div class="obj-line"><span class="obj-ico ico-del">⇥</span><span class="obj-text">${esc(d.name)}を${d.type==='purchase'?'購入して':''}納品</span><span class="obj-tag ${d.type}">${d.type==='purchase'?'購入品':'成果物'}</span>${d.done?'<span class="obj-check">✓</span>':''}</div>
+      <div class="obj-meter">
+        <div class="gauge ${d.done?'g-done':''}"><div class="gauge-fill" style="width:${d.done?100:0}%"></div></div>
+        <span class="obj-count">${cur}/${qty}</span>
+        <button class="btn btn-deliver" data-hand-over="${d.id}" ${d.done||st!=='in_progress'?'disabled':''}>${d.done?'納品済':'引き渡す'}</button>
+        ${canDel?`<button class="btn btn-sm btn-x" data-del-del="${d.id}" title="削除">✕</button>`:''}
+      </div>
+    </div>`;
+  }
+
   function renderTasks() {
     checkDeadlines();
     syncBathDailyTask();
     syncChoreDailyTasks();
     ensureDailyRequiredTasks();
+    if (state.settings.medLinkDailyTask) syncMedDailyTask();
     const list = document.getElementById('taskList');
     const pending = state.tasks.filter(t => t.status === 'pending_review');
     const normal = state.tasks.filter(t => t.status !== 'pending_review');
@@ -1215,20 +1456,40 @@
       html += '<div class="section-title">未確認レビュー<span class="status-pill pending_review">' + pending.length + '</span></div>';
       pending.forEach(t => {
         html += `<div class="task-card status-pending_review ${t.id===selectedId?'active':''}" data-select="${t.id}">
-          <div class="tc-title">${esc(t.title)}<span class="status-pill pending_review">未確認</span></div>
-          <div class="tc-meta">微調整＆確認が必要</div>
+          <div class="tc-row1"><span class="tc-ico">?</span><span class="tc-title">${esc(t.title)}</span><span class="tc-status st-pending_review">未確認</span></div>
+          <div class="tc-row2"><span class="tc-meta">微調整＆確認が必要</span></div>
         </div>`;
       });
     }
-    html += '<div class="section-title">任務一覧<button class="btn btn-sm btn-primary" id="btnNewMain">＋ 追加</button></div>';
+    const doneCount = normal.filter(t => effectiveStatus(t) === 'completed').length;
+    html += `<div class="list-head">
+      <div class="section-title" style="margin:0">任務一覧 <span class="list-count">✓ ${doneCount}/${normal.length}</span></div>
+      <div class="list-head-actions">
+        <button class="btn btn-sm ${showCompleted?'btn-on':''}" id="btnShowDone">${showCompleted?'☑':'☐'} 完了を表示</button>
+        <button class="btn btn-sm btn-primary" id="btnNewMain">＋ 追加</button>
+      </div>
+    </div>`;
     if (!normal.length) html += '<div class="empty">任務なし</div>';
-    normal.forEach(t => {
-      const st = effectiveStatus(t);
-      const p = taskProgress(t);
-      html += `<div class="task-card status-${st} ${t.id===selectedId?'active':''}" data-select="${t.id}">
-        <div class="tc-title">${esc(t.title)}${t.isExample?'<span class="example-badge">サンプル</span>':''}${t.isDailyRequired&&st!=='completed'?'<span class="status-pill pending_review">毎日必須</span>':''}<span class="status-pill ${st}">${STATUS_LABEL[st]}</span></div>
-        <div class="tc-meta">${esc(t.trader||'—')} · ${p.done}/${p.total}${t.location?' · 場所: '+esc(t.location):''}</div>
+    GROUPS.forEach(([g, label]) => {
+      const all = normal.filter(t => taskGroup(t) === g);
+      if (!all.length) return;
+      const items = all
+        .map((t, i) => ({ t, i, st: effectiveStatus(t) }))
+        .filter(x => showCompleted || x.st !== 'completed' || x.t.id === selectedId)
+        .sort((a, b) => {
+          const so = (STATUS_ORDER[a.st] ?? 9) - (STATUS_ORDER[b.st] ?? 9);
+          if (so) return so;
+          if (g === 'dl') return (Date.parse(a.t.deadline) || 0) - (Date.parse(b.t.deadline) || 0);
+          return a.i - b.i;
+        });
+      const gDone = all.filter(t => effectiveStatus(t) === 'completed').length;
+      const collapsed = !!collapsedGroups[g];
+      html += `<div class="group-head ${g==='req'?'g-req':g==='dl'?'g-dl':''}" data-group-toggle="${g}">
+        <span class="gh-chev">${collapsed?'▸':'▾'}</span><span class="gh-label">${label}</span><span class="gh-count">${gDone}/${all.length}</span>
       </div>`;
+      if (!collapsed) {
+        html += items.map(x => taskCardHtml(x.t)).join('') || '<div class="empty small">（完了のみ・非表示中）</div>';
+      }
     });
     list.innerHTML = html;
 
@@ -1241,18 +1502,18 @@
     const st = effectiveStatus(task);
     const p = taskProgress(task);
     const dl = formatDeadline(task.deadline);
+    const mapLabel = task.location ? esc(task.location) : '任意の場所';
 
     if (st === 'pending_review') {
       detail.innerHTML = `
         <div class="detail-panel">
           <div class="detail-header">
-            <div class="detail-trader">PENDING REVIEW · 未確認</div>
+            <div class="detail-top"><div class="detail-trader">PENDING REVIEW · 未確認</div><div class="detail-map">${mapLabel}</div></div>
             <div class="detail-title">${esc(task.title)}</div>
             <div class="detail-desc">${esc(task.desc||'')}</div>
             <div class="detail-desc" style="margin-top:6px">期限: ${dl ? esc(dl) : 'なし'}</div>
-            ${task.location?`<div class="detail-desc detail-location">場所: ${esc(task.location)}</div>`:''}
-            <div class="section-title" style="margin-top:10px">サブタスク</div>
-            ${(task.subs||[]).map(s=>`<div class="obj-card"><div class="obj-text">${esc(s.title)}</div></div>`).join('')||'<div class="empty">なし</div>'}
+            <div class="section-title" style="margin-top:10px">目標</div>
+            ${(task.subs||[]).map(s=>`<div class="obj-card"><div class="obj-text">${s.kind==='item'?'持ち物: ':''}${esc(s.title)}${objTarget(s)>1?' ×'+objTarget(s):''}</div></div>`).join('')||'<div class="empty">なし</div>'}
             <div class="section-title">納品</div>
             ${(task.deliveries||[]).map(d=>`<div class="obj-card"><div class="obj-text">${esc(d.name)} ×${d.qty} (${d.type==='purchase'?'購入品':'成果物'})</div></div>`).join('')||'<div class="empty">なし</div>'}
             <div class="detail-actions" style="margin-top:12px">
@@ -1265,45 +1526,61 @@
       return;
     }
 
+    const editable = canEditObjectives(task);
+    const isSys = isSystemTask(task);
+    const canAdd = (st === 'in_progress' || st === 'unaccepted') && !isSys;
+    const items = (task.subs || []).filter(s => s.kind === 'item');
+    const goals = (task.subs || []).filter(s => s.kind !== 'item');
+    const dels = task.deliveries || [];
+    const secCount = arr => arr.filter(objDone).length + '/' + arr.length;
+    const lvl = deadlineLevel(task);
+    let deadlineBlock = '';
+    if (task.deadline) {
+      deadlineBlock = st === 'completed'
+        ? `<div class="detail-deadline">期限 ${esc(dl||'')} <span class="dd-ok">期限内に完了</span></div>`
+        : `<div class="detail-deadline dl-${lvl}">${lvl==='red'&&countdownInfo(task.deadline)?.over?'':'<span class="dd-label">残り</span>'}<span class="cd cd-big cd-${lvl}" data-cd="${esc(task.deadline)}">${esc(countdownInfo(task.deadline)?.text||'')}</span><span class="dd-at">期限 ${esc(dl||'')}</span></div>`;
+    }
+    let medTools = '';
+    if (task.isMedDaily) {
+      const nx = medNextLabel();
+      medTools = `<div class="med-tools">${nx&&st!=='completed'?`<span class="med-next-inline">${esc(nx)}</span>`:'<span></span>'}<button class="btn btn-sm" data-open-med-settings>⚙ 薬を管理</button></div>`;
+    }
+
     detail.innerHTML = `
       <div class="detail-panel">
         <div class="detail-header ${st}">
-          <div class="detail-trader">${esc(task.trader||'UNKNOWN')} · ${STATUS_LABEL[st]}</div>
-          <div class="detail-title">${esc(task.title)}${task.isExample?'<span class="example-badge">サンプル</span>':''}<span class="status-pill ${st}">${STATUS_LABEL[st]}</span></div>
+          <div class="detail-top">
+            <button class="btn btn-sm btn-back" data-back-list>▲ 一覧</button>
+            <div class="detail-topright"><span class="detail-map" title="場所">${mapLabel}</span><span class="tc-status st-${st}">${STATUS_LABEL[st]}</span></div>
+          </div>
+          <div class="detail-trader">${esc(task.trader||'UNKNOWN')}</div>
+          <div class="detail-title"><span class="tc-ico">${taskIcon(task)}</span>${esc(task.title)}${task.isExample?'<span class="example-badge">サンプル</span>':''}</div>
+          ${deadlineBlock}
           ${task.desc?`<div class="detail-desc">${esc(task.desc)}</div>`:''}
-          <div class="detail-desc" style="margin-top:4px">期限: ${dl?esc(dl):'なし'}</div>
-          ${task.location?`<div class="detail-desc detail-location">場所: ${esc(task.location)}</div>`:''}
-          <div class="progress-row"><span>OBJECTIVES</span><span class="progress-count">${p.done}/${p.total}</span></div>
+          ${medTools}
+          <div class="progress-row"><span>進捗</span><span class="progress-count">${p.done}/${p.total}</span></div>
           <div class="progress-bar"><div class="progress-fill ${st==='completed'?'done':''} ${st==='failed'?'failed':''}" style="width:${p.pct}%"></div></div>
           <div class="detail-actions">
-            ${st==='in_progress'?`<button class="btn btn-danger btn-sm" data-fail-main="${task.id}">失敗にする</button>`:''}
-            <button class="btn btn-sm" data-edit-main="${task.id}">編集</button>
-            ${!isSystemTask(task)?`<button class="btn btn-sm btn-danger" data-del-main="${task.id}">削除</button>`:''}
+            ${st==='in_progress'&&!isSys?`<button class="btn btn-danger btn-sm" data-fail-main="${task.id}">失敗にする</button>`:''}
+            ${!task.isMedDaily?`<button class="btn btn-sm" data-edit-main="${task.id}">編集</button>`:''}
+            ${!isSys?`<button class="btn btn-sm btn-danger" data-del-main="${task.id}">削除</button>`:''}
           </div>
         </div>
         <div class="banner ok ${st==='completed'?'show':''}">◆ TASK COMPLETED ◆</div>
         <div class="banner bad ${st==='failed'?'show':''}">◆ TASK FAILED ◆</div>
+        ${lvl==='red'&&st==='in_progress'?'<div class="banner bad show dl-warn">◆ 期限まで3時間未満 ◆</div>':''}
         ${st==='unaccepted'?`<div class="accept-panel"><p>受注すると目標が有効になります</p><button class="btn btn-accept" data-accept="${task.id}">受注する</button></div>`:''}
         ${st==='failed'?`<div class="accept-panel"><p>失敗しました。再開できます</p><button class="btn btn-accept" data-restart="${task.id}">再開する</button></div>`:''}
-        <div class="objectives ${st==='unaccepted'?'locked':''}">
+        <div class="objectives ${st==='unaccepted'?'locked':''} ${editable?'':'ro'}">
           ${st==='unaccepted'?'<div class="lock-note">受注後にチェック／納品が有効（追加は可能）</div>':''}
-          <div class="section-title" style="padding:0 12px">サブタスク ${(st==='in_progress'||st==='unaccepted')&&!isSystemTask(task)?'<button class="btn btn-sm" data-add-sub>＋</button>':''}</div>
-          ${(task.subs||[]).map(s => `
-            <div class="obj-card ${s.done?'done':''}">
-              <div class="checkbox ${s.done?'checked':''}" data-toggle-sub="${s.id}"></div>
-              <div class="obj-body"><div class="obj-text">${esc(s.title)}</div></div>
-              ${(st==='in_progress'||st==='unaccepted')&&!isSystemTask(task)?`<button class="btn btn-sm btn-danger" data-del-sub="${s.id}">✕</button>`:''}
-            </div>`).join('') || '<div class="empty">なし</div>'}
-          <div class="section-title" style="padding:0 12px">納品 ${(st==='in_progress'||st==='unaccepted')?'<button class="btn btn-sm" data-add-del>＋</button>':''}</div>
-          ${(task.deliveries||[]).map(d => `
-            <div class="obj-card ${d.done?'done':''}">
-              <div class="obj-body">
-                <div class="obj-text">${esc(d.name)} ×${d.qty}</div>
-                <span class="obj-tag ${d.type}">${d.type==='purchase'?'購入品':'成果物'}</span>
-              </div>
-              <button class="btn btn-deliver" data-hand-over="${d.id}" ${d.done||st!=='in_progress'?'disabled':''}>${d.done?'納品済':'納品する'}</button>
-              ${(st==='in_progress'||st==='unaccepted')?`<button class="btn btn-sm btn-danger" data-del-del="${d.id}">✕</button>`:''}
-            </div>`).join('') || '<div class="empty">なし</div>'}
+          ${items.length?`<div class="obj-section"><span>必要物品（持ち物）</span><span class="obj-section-count">${secCount(items)}</span></div>
+          ${items.map(s => objRowHtml(task, s, st, editable)).join('')}`:''}
+          <div class="obj-section"><span>${task.isMedDaily?'本日の服薬':'目標'}</span><span class="obj-section-count">${secCount(goals)}${canAdd?' <button class="btn btn-sm" data-add-sub>＋ 目標</button>':''}</span></div>
+          ${goals.map(s => objRowHtml(task, s, st, editable)).join('') || (task.isMedDaily?'<div class="empty">薬が未登録です。「⚙ 薬を管理」から登録してください</div>':'<div class="empty">なし</div>')}
+          ${(dels.length || canAdd)?`<div class="obj-section"><span>納品</span><span class="obj-section-count">${dels.filter(d=>d.done).length}/${dels.length}${canAdd?' <button class="btn btn-sm" data-add-del>＋ 納品</button>':''}</span></div>
+          ${dels.map(d => deliveryRowHtml(task, d, st)).join('')}`:''}
+          ${!isSys?`<div class="obj-section"><span>報酬</span></div>
+          <div class="reward-box ${task.reward?'':'empty-reward'}">${task.reward?esc(task.reward):'未設定（「編集」で入力）'}</div>`:''}
           <div style="height:8px"></div>
         </div>
       </div>`;
@@ -1370,9 +1647,11 @@
       </div>`).join('');
   }
 
+  // 服薬設定シート（登録・編集・時刻・通知）。チェックは任務タブの「服薬」任務で行う
   function renderMed() {
     const next = nextDoseInfo();
     const nextEl = document.getElementById('medNext');
+    if (!nextEl) return;
     if (next) {
       nextEl.style.display = 'block';
       nextEl.textContent = '次の服薬: ' + next.med.name + ' ' + (next.med.dose||'') + ' @ ' + next.n.label +
@@ -1380,31 +1659,84 @@
     } else {
       nextEl.style.display = 'none';
     }
-
+    const perm = document.getElementById('notifPermState');
+    if (perm) perm.textContent = !('Notification' in window) ? '通知: 非対応' : ('通知: ' + ({ granted: '許可済み', denied: '拒否', default: '未設定' }[Notification.permission] || Notification.permission));
     const el = document.getElementById('medList');
     const enabled = state.medications.filter(m => m.enabled !== false);
+    const rows = medDoseRows();
+    const taken = rows.filter(r => r.done).length;
+    let html = `<button class="btn btn-primary med-go" data-med-go-task>任務タブで服薬チェック（本日 ${taken}/${rows.length}）</button>`;
     if (!enabled.length) {
-      el.innerHTML = '<div class="empty">登録された薬はありません</div>';
+      el.innerHTML = html + '<div class="empty">登録された薬はありません</div>';
       return;
     }
-    let html = '<div class="section-title">今日のチェック</div>';
+    html += '<div class="section-title">登録中の薬</div>';
     enabled.forEach(med => {
-      html += `<div style="margin-bottom:10px">
-        <div class="tc-title" style="margin-bottom:4px">${esc(med.name)} <span class="li-meta">${esc(med.dose||'')}</span>${med.isExample?'<span class="example-badge">サンプル</span>':''}
-          <button class="btn btn-sm btn-danger" data-med-del="${med.id}" style="float:right">削除</button>
-        </div>`;
-      (med.times||[]).forEach(t => {
-        const n = normalizeTimeLabel(t);
-        const taken = isMedTaken(med.id, n.key);
-        html += `<div class="list-item ${taken?'checked':''}">
-          <div class="checkbox ${taken?'checked':''}" data-med-take="${med.id}" data-time="${esc(n.key)}"></div>
-          <div class="li-name">${esc(n.label)}</div>
-          <div class="li-meta">${taken?'服用済':'未服用'}</div>
-        </div>`;
-      });
-      html += '</div>';
+      const times = (med.times || []).map(t => normalizeTimeLabel(t).label);
+      html += `<div class="list-item med-item">
+        <div class="obj-body">
+          <div class="li-name">${esc(med.name)} <span class="li-meta">${esc(med.dose||'')}</span>${med.isExample?'<span class="example-badge">サンプル</span>':''}</div>
+          <div class="med-times">${times.map(x => `<span class="time-chip">${esc(x)}</span>`).join('')}</div>
+        </div>
+        <button class="btn btn-sm" data-med-edit="${med.id}">編集</button>
+        <button class="btn btn-sm btn-danger" data-med-del="${med.id}">削除</button>
+      </div>`;
     });
     el.innerHTML = html;
+  }
+
+  // ===== OBJECTIVE CHANGE（チェック／数量／持ち物 共通） =====
+  // SE: 前進=check、最後の目標で本当に完了した時だけ complete、戻す=click（入浴/家事を戻す時は従来通り fail）
+  function changeObjective(task, sub, mutate) {
+    const prevStatus = effectiveStatus(task);
+    const prevDone = objDone(sub);
+    const prevCur = objCurrent(sub);
+    mutate();
+    const nowDone = objDone(sub);
+    const forward = objCurrent(sub) > prevCur || (!prevDone && nowDone);
+    if (objCurrent(sub) === prevCur && prevDone === nowDone) return;
+    if (task.isMedDaily && sub.medKey) {
+      const [medId, ...rest] = sub.medKey.split('__');
+      setMedTaken(medId, rest.join('__'), nowDone);
+      scheduleMedNotifications();
+    }
+    if (task.isBathDaily && sub.isBathSub) {
+      state.bathLog[todayKey()] = !!nowDone;
+      if (nowDone && state.bathMeta) state.bathMeta.streakWarnedFor = null;
+      else if (!nowDone) playSound('fail');
+    }
+    const isChore = sub.isChoreSub && (task.isLaundryDaily || task.isCleanDaily || task.isTrashDaily);
+    if (isChore) {
+      const ctype = sub.choreType || task.choreType;
+      if (ctype) choreLogMap(ctype)[todayKey()] = !!nowDone;
+      if (nowDone && state.choreMeta) state.choreMeta.warnedFor = null;
+      else if (!nowDone) playSound('fail');
+    }
+    syncCompletion(task);
+    if (task.isDailyRequired) {
+      state.dailyLog[todayKey()] = state.dailyLog[todayKey()] || {};
+      state.dailyLog[todayKey()][task.dailyId] = objectivesComplete(task);
+    }
+    save();
+    const just = prevStatus !== 'completed' && effectiveStatus(task) === 'completed';
+    const silentUndo = !nowDone && prevDone && ((task.isBathDaily && sub.isBathSub) || isChore);
+    if (!silentUndo) playSound(just ? 'complete' : (forward ? 'check' : 'click'));
+    if (just) toast('任務完了: ' + task.title);
+    maybeShowBathStreakWarning(!!(task.isBathDaily && sub.isBathSub && !nowDone));
+    if (isChore) maybeShowChoreWarning(!nowDone);
+    renderTasks();
+  }
+
+  function updateSubModalLabels() {
+    const kind = document.getElementById('subKind').value;
+    document.getElementById('subTitleLabel').textContent = kind === 'item' ? '物品名（持ち物・必要物品）' : '目標';
+    document.getElementById('subTargetGroup').style.display = kind === 'check' ? 'none' : '';
+    document.getElementById('subTargetLabel').textContent = kind === 'item' ? '必要数' : '目標数（回数・数量）';
+  }
+
+  function openMedSettings() {
+    renderMed();
+    openModal('modalMedSettings');
   }
 
   // ===== MODALS =====
@@ -1478,21 +1810,45 @@
         document.getElementById('mainDesc').value = '';
         document.getElementById('mainDeadline').value = '';
         document.getElementById('mainLocation').value = '';
+        document.getElementById('mainReward').value = '';
         openModal('modalMain');
         return;
+      }
+      if (e.target.closest('#btnShowDone')) {
+        showCompleted = !showCompleted;
+        localStorage.setItem(SHOW_DONE_KEY, showCompleted ? '1' : '0');
+        playSound('click'); renderTasks(); return;
+      }
+      const gh = e.target.closest('[data-group-toggle]');
+      if (gh) {
+        const g = gh.getAttribute('data-group-toggle');
+        collapsedGroups[g] = !collapsedGroups[g];
+        localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsedGroups));
+        playSound('click'); renderTasks(); return;
       }
       const card = e.target.closest('[data-select]');
       if (card) {
         selectedId = card.getAttribute('data-select');
         playSound('click');
         renderTasks();
+        const det = document.getElementById('taskDetail');
+        if (det && window.matchMedia && window.matchMedia('(max-width: 899px)').matches) {
+          requestAnimationFrame(() => det.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+        }
       }
     });
 
     document.getElementById('taskDetail').addEventListener('click', e => {
-      const t = e.target.closest('[data-accept],[data-restart],[data-fail-main],[data-edit-main],[data-del-main],[data-add-sub],[data-add-del],[data-toggle-sub],[data-del-sub],[data-hand-over],[data-del-del],[data-approve],[data-discard]');
+      const t = e.target.closest('[data-accept],[data-restart],[data-fail-main],[data-edit-main],[data-del-main],[data-add-sub],[data-add-del],[data-toggle-sub],[data-del-sub],[data-hand-over],[data-del-del],[data-approve],[data-discard],[data-obj-inc],[data-obj-dec],[data-obj-ready],[data-obj-unready],[data-open-med-settings],[data-back-list]');
       if (!t) return;
       const task = selectedId ? getTask(selectedId) : null;
+
+      if (t.hasAttribute('data-back-list')) {
+        playSound('click');
+        document.querySelector('#screenTasks .screen-body')?.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      if (t.hasAttribute('data-open-med-settings')) { openMedSettings(); return; }
 
       if (t.hasAttribute('data-approve')) {
         const id = t.getAttribute('data-approve');
@@ -1519,7 +1875,7 @@
       if (t.hasAttribute('data-restart')) {
         const tk = getTask(t.getAttribute('data-restart'));
         if (!tk) return;
-        tk.subs.forEach(s => s.done = false);
+        tk.subs.forEach(s => setObjDone(s, false));
         tk.deliveries.forEach(d => d.done = false);
         tk.status = 'unaccepted'; tk.acceptedAt = null; tk.failSoundPlayed = false;
         save(); playSound('click'); renderTasks(); return;
@@ -1542,6 +1898,7 @@
         document.getElementById('mainDesc').value = tk.desc || '';
         document.getElementById('mainDeadline').value = toLocalInput(tk.deadline);
         document.getElementById('mainLocation').value = tk.location || '';
+        document.getElementById('mainReward').value = tk.reward || '';
         openModal('modalMain'); return;
       }
       if (t.hasAttribute('data-del-main')) {
@@ -1556,6 +1913,9 @@
       }
       if (t.hasAttribute('data-add-sub')) {
         document.getElementById('subTitle').value = '';
+        document.getElementById('subKind').value = 'check';
+        document.getElementById('subTarget').value = '1';
+        updateSubModalLabels();
         openModal('modalSub'); return;
       }
       if (t.hasAttribute('data-add-del')) {
@@ -1566,40 +1926,22 @@
       }
       if (!task) return;
       if (t.hasAttribute('data-toggle-sub')) {
-        if (effectiveStatus(task) !== 'in_progress') return;
+        if (!canEditObjectives(task)) return;
         const sub = task.subs.find(s => s.id === t.getAttribute('data-toggle-sub'));
         if (!sub) return;
-        sub.done = !sub.done;
-        // if med daily sub, sync med log
-        if (task.isMedDaily && sub.medKey) {
-          const [medId, ...rest] = sub.medKey.split('__');
-          const timeKey = rest.join('__');
-          setMedTaken(medId, timeKey, sub.done);
-        }
-        if (task.isBathDaily && sub.isBathSub) {
-          state.bathLog[todayKey()] = !!sub.done;
-          if (sub.done && state.bathMeta) state.bathMeta.streakWarnedFor = null;
-          else if (!sub.done) playSound('fail');
-        }
-        if (task.isDailyRequired) {
-          state.dailyLog[todayKey()] = state.dailyLog[todayKey()] || {};
-        }
-        if (sub.isChoreSub && (task.isLaundryDaily || task.isCleanDaily || task.isTrashDaily)) {
-          const ctype = sub.choreType || task.choreType;
-          if (ctype) choreLogMap(ctype)[todayKey()] = !!sub.done;
-          if (sub.done && state.choreMeta) state.choreMeta.warnedFor = null;
-          else if (!sub.done) playSound('fail');
-        }
-        const just = syncCompletion(task);
-        if (task.isDailyRequired) state.dailyLog[todayKey()][task.dailyId] = objectivesComplete(task);
-        save();
-        const choreUndo = sub.isChoreSub && !sub.done && (task.isLaundryDaily || task.isCleanDaily || task.isTrashDaily);
-        if (!(task.isBathDaily && sub.isBathSub && !sub.done) && !choreUndo) {
-          playSound(just ? 'complete' : 'check');
-        }
-        maybeShowBathStreakWarning(!!(task.isBathDaily && sub.isBathSub && !sub.done));
-        if (choreUndo || (sub.isChoreSub && sub.done)) maybeShowChoreWarning(!!choreUndo);
-        renderTasks(); return;
+        changeObjective(task, sub, () => setObjDone(sub, !objDone(sub)));
+        return;
+      }
+      if (t.hasAttribute('data-obj-inc') || t.hasAttribute('data-obj-dec') || t.hasAttribute('data-obj-ready') || t.hasAttribute('data-obj-unready')) {
+        if (!canEditObjectives(task)) return;
+        const id = t.getAttribute('data-obj-inc') || t.getAttribute('data-obj-dec') || t.getAttribute('data-obj-ready') || t.getAttribute('data-obj-unready');
+        const sub = task.subs.find(s => s.id === id);
+        if (!sub) return;
+        if (t.hasAttribute('data-obj-inc')) changeObjective(task, sub, () => setObjCurrent(sub, objCurrent(sub) + 1));
+        else if (t.hasAttribute('data-obj-dec')) changeObjective(task, sub, () => setObjCurrent(sub, objCurrent(sub) - 1));
+        else if (t.hasAttribute('data-obj-ready')) changeObjective(task, sub, () => setObjDone(sub, true));
+        else changeObjective(task, sub, () => setObjDone(sub, false));
+        return;
       }
       if (t.hasAttribute('data-del-sub')) {
         task.subs = task.subs.filter(s => s.id !== t.getAttribute('data-del-sub'));
@@ -1627,9 +1969,10 @@
       const dlVal = document.getElementById('mainDeadline').value;
       const deadline = dlVal ? new Date(dlVal).toISOString() : null;
       const loc = (document.getElementById('mainLocation')?.value || '').trim();
+      const reward = (document.getElementById('mainReward')?.value || '').trim();
       if (editingMainId) {
         const t = getTask(editingMainId);
-        if (t) { t.title = title; t.trader = trader; t.desc = desc; t.deadline = deadline; t.location = loc; t.isExample = false; }
+        if (t) { t.title = title; t.trader = trader; t.desc = desc; t.deadline = deadline; t.location = loc; t.reward = reward; t.isExample = false; }
         if (t && t.isDailyRequired) {
           const def = state.dailyRequired.find(d => d.id === t.dailyId);
           if (def) { def.title = title; def.location = loc; }
@@ -1637,7 +1980,7 @@
         }
       } else {
         const t = {
-          id: uid(), title, trader, desc, deadline, location: loc, isExample: false,
+          id: uid(), title, trader, desc, deadline, location: loc, reward, isExample: false,
           status: 'unaccepted', failSoundPlayed: false, acceptedAt: null,
           subs: [], deliveries: []
         };
@@ -1650,7 +1993,9 @@
       const title = document.getElementById('subTitle').value.trim();
       if (!title || !selectedId) return;
       const task = getTask(selectedId);
-      task.subs.push({ id: uid(), title, done: false });
+      const kind = document.getElementById('subKind').value;
+      const target = kind === 'check' ? 1 : Math.max(1, parseInt(document.getElementById('subTarget').value, 10) || 1);
+      task.subs.push(makeObjective(title, kind, target));
       if (task.status === 'completed') task.status = 'in_progress';
       save(); closeModal('modalSub'); playSound('click'); renderTasks();
     });
@@ -1833,7 +2178,12 @@
     });
 
     // Medication
+    document.getElementById('subKind').addEventListener('change', updateSubModalLabels);
+    document.getElementById('btnOpenMedSettings').addEventListener('click', () => { closeModal('modalSettings'); openMedSettings(); });
     document.getElementById('btnAddMed').addEventListener('click', () => {
+      editingMedId = null;
+      document.getElementById('modalMedTitle').textContent = '薬を登録';
+      document.getElementById('btnSaveMed').textContent = '登録';
       document.getElementById('medName').value = '';
       document.getElementById('medDose').value = '1錠';
       document.getElementById('medTimes').value = '朝';
@@ -1848,6 +2198,15 @@
         document.getElementById('medTimes').value.split(/[、,\s]+/).map(s => s.trim()).filter(Boolean)
       );
       if (!times.length) times = ['08:00'];
+      if (editingMedId) {
+        const med = state.medications.find(m => m.id === editingMedId);
+        if (med) { med.name = name; med.dose = dose; med.times = times; med.isExample = false; }
+        editingMedId = null;
+        syncMedDailyTask(); scheduleMedNotifications();
+        save(); closeModal('modalMed'); playSound('click'); renderMed(); renderTasks();
+        toast('薬を更新しました');
+        return;
+      }
       const existing = state.medications.find(m =>
         m.enabled !== false && String(m.name || '').trim() === name
       );
@@ -1856,7 +2215,7 @@
         existing.dose = dose || existing.dose;
         existing.isExample = false;
         syncMedDailyTask(); scheduleMedNotifications();
-        save(); closeModal('modalMed'); playSound('click'); renderMed();
+        save(); closeModal('modalMed'); playSound('click'); renderMed(); renderTasks();
         toast('同名の薬に時刻をマージしました');
         return;
       }
@@ -1864,7 +2223,7 @@
         id: uid(), name, dose, times, linkToDailyTask: true, enabled: true, isExample: false
       });
       syncMedDailyTask(); scheduleMedNotifications();
-      save(); closeModal('modalMed'); playSound('click'); renderMed();
+      save(); closeModal('modalMed'); playSound('click'); renderMed(); renderTasks();
     });
 
     document.getElementById('btnNotifPerm').addEventListener('click', async () => {
@@ -1872,27 +2231,38 @@
       const perm = await Notification.requestPermission();
       toast(perm === 'granted' ? '通知を許可しました（アプリ表示中のみ）' : '通知が拒否されました');
       if (perm === 'granted') scheduleMedNotifications();
+      renderMed();
       playSound('click');
     });
 
     document.getElementById('medList').addEventListener('click', e => {
-      const take = e.target.closest('[data-med-take]');
+      const edit = e.target.closest('[data-med-edit]');
       const del = e.target.closest('[data-med-del]');
-      if (take) {
-        const medId = take.getAttribute('data-med-take');
-        const timeKey = take.getAttribute('data-time');
-        const taken = !isMedTaken(medId, timeKey);
-        setMedTaken(medId, timeKey, taken);
-        playSound('check');
-        renderMed();
-        // refresh tasks if visible
+      const go = e.target.closest('[data-med-go-task]');
+      if (go) {
+        closeModal('modalMedSettings');
+        const mt = state.tasks.find(x => x.isMedDaily);
+        if (mt) selectedId = mt.id;
+        switchTab('tasks');
+        return;
+      }
+      if (edit) {
+        const med = state.medications.find(m => m.id === edit.getAttribute('data-med-edit'));
+        if (!med) return;
+        editingMedId = med.id;
+        document.getElementById('modalMedTitle').textContent = '薬を編集';
+        document.getElementById('btnSaveMed').textContent = '保存';
+        document.getElementById('medName').value = med.name || '';
+        document.getElementById('medDose').value = med.dose || '';
+        document.getElementById('medTimes').value = (med.times || []).map(t => TIME_TO_SLOT[t] || t).join(', ');
+        openModal('modalMed');
         return;
       }
       if (del) {
         if (!confirm('この薬を削除しますか？')) return;
         const id = del.getAttribute('data-med-del');
         state.medications = state.medications.filter(m => m.id !== id);
-        syncMedDailyTask(); save(); playSound('click'); renderMed();
+        syncMedDailyTask(); scheduleMedNotifications(); save(); playSound('click'); renderMed(); renderTasks();
       }
     });
 
@@ -1972,11 +2342,13 @@
       }).catch(err => console.warn('SW failed', err));
     }
 
+    setInterval(tickCountdowns, 1000);
     setInterval(() => {
-      if (checkDeadlines()) {
-        if (document.querySelector('.screen.active')?.dataset.screen === 'tasks') renderTasks();
-      }
-      if (document.querySelector('.screen.active')?.dataset.screen === 'med') renderMed();
+      const changed = checkDeadlines();
+      // 日付・服薬の時刻超過・期限の色を定期反映（モーダル表示中は再描画しない）
+      if (activeScreen() === 'tasks' && !anyModalOpen()) renderTasks();
+      else if (changed && activeScreen() === 'tasks') renderTasks();
+      if (document.getElementById('modalMedSettings')?.classList.contains('show')) renderMed();
     }, 30000);
   }
 

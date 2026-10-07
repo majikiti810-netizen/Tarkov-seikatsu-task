@@ -2,13 +2,14 @@
  * Scope: directory of this file (./). Keep all assets relative.
  * Bump CACHE_VERSION on every release so clients drop stale caches.
  */
-const CACHE_VERSION = 'v5-2026-10-07-chores';
+const CACHE_VERSION = 'v6-2026-10-07-chat5w1h';
 const CACHE = 'daily-tasks-demo-' + CACHE_VERSION;
 
 const PRECACHE = [
   './',
   './index.html',
   './styles.css',
+  './parser.js',
   './app.js',
   './data/adapter.js',
   './manifest.json',

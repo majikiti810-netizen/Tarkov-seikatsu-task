@@ -131,6 +131,7 @@
       <div class="form-group"><label>任務名</label><input id="mainTitle" maxlength="80"></div>
       <div class="form-group"><label>発注者</label><input id="mainTrader" maxlength="40"></div>
       <div class="form-group"><label>説明</label><textarea id="mainDesc" maxlength="300"></textarea></div>
+      <div class="form-group"><label>場所（任意）</label><input id="mainLocation" maxlength="60" placeholder="例: 市役所"></div>
       <div class="form-group"><label>期限（任意）</label><input type="datetime-local" id="mainDeadline">
         <div class="form-hint">受注後に期限超過かつ未完了だと失敗になります</div>
       </div>
@@ -214,6 +215,7 @@
 </div>
 
 <script src="./data/adapter.js"></script>
+<script src="./parser.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

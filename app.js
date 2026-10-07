@@ -894,165 +894,24 @@
   }
 
   // ===== CHAT PARSER =====
-  function parseWhen(text) {
-    const now = new Date();
-    let date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    let hasDate = false;
-    let timeStr = null;
-
-    if (/今日/.test(text)) { hasDate = true; }
-    else if (/明日/.test(text)) { date.setDate(date.getDate() + 1); hasDate = true; }
-    else if (/明後日/.test(text)) { date.setDate(date.getDate() + 2); hasDate = true; }
-    else {
-      const wm = text.match(/(?:今週|来週)?([日月火水木金土])曜/);
-      if (wm) {
-        const target = WEEKDAYS[wm[1]];
-        let diff = target - date.getDay();
-        if (/来週/.test(text)) diff += 7;
-        else if (diff <= 0) diff += 7;
-        date.setDate(date.getDate() + diff);
-        hasDate = true;
-      }
-    }
-
-    const tm = text.match(/(\d{1,2})\s*[:：時]\s*(\d{1,2})?/);
-    if (tm) {
-      const h = Math.min(23, parseInt(tm[1], 10));
-      const mi = tm[2] != null ? Math.min(59, parseInt(tm[2], 10)) : 0;
-      timeStr = String(h).padStart(2,'0') + ':' + String(mi).padStart(2,'0');
-      date.setHours(h, mi, 0, 0);
-      hasDate = true;
-    }
-
-    // 毎朝 / 毎昼 / 毎晩
-    const every = text.match(/毎(朝|昼|夜)/);
-    let recurringSlot = every ? every[1] : null;
-
-    return { date: hasDate ? date : null, timeStr, recurringSlot, hasDate };
-  }
-
-  function cleanTitle(text) {
-    return text
-      .replace(/今日|明日|明後日|来週|今週/g, '')
-      .replace(/[日月火水木金土]曜[日]?/g, '')
-      .replace(/\d{1,2}\s*[:：時]\s*\d{0,2}\s*分?/g, '')
-      .replace(/毎[朝昼夜]/g, '')
-      .replace(/を?買う|購入する?|買い物/g, '')
-      .replace(/を?(飲む|服用する?)/g, '')
-      .replace(/^(に|で|を|が|は)+/, '')
-      .replace(/[にをがはで]$/, '')
-      .trim() || text.trim();
-  }
-
+  // 本体は parser.js（DOM非依存・node でテスト可能: tests/parse.test.mjs）。
+  // 1文から 任務 / 日時・期限 / 場所 / 持ち物 / 買うもの / メモ を抽出する。
   function parseChat(text) {
-    const raw = text.trim();
+    const CP = (typeof window !== 'undefined' && window.ChatParser) || null;
+    const raw = String(text || '').trim();
     if (!raw) return null;
-    const when = parseWhen(raw);
-
-    // Shopping
-    if (/買う|購入|買い物/.test(raw)) {
-      let itemsPart = raw
-        .replace(/今日|明日|明後日|来週|今週|[日月火水木金土]曜[日]?/g, '')
-        .replace(/\d{1,2}\s*[:：時]\s*\d{0,2}\s*分?/g, '')
-        .replace(/を?(買う|購入する?|買い物する?)/g, '')
-        .trim();
-      const items = itemsPart.split(/[と、,及び&]/).map(s => s.trim()).filter(Boolean);
-      if (!items.length) items.push('買い物アイテム');
-      return {
-        kind: 'shopping',
-        label: '買い物リスト',
-        items,
-        summary: items.map(i => '・' + i).join('\n'),
-        meta: '買い物リストに追加'
-      };
+    if (!CP) {
+      return { kind: 'todo', label: 'サブタスク / ToDo', source: raw, title: raw, summary: raw,
+        meta: '「インボックス」任務のサブタスクとして追加' };
     }
-
-    // Medication
-    if (/薬|飲む|服用|ビタミン|サプリ/.test(raw)) {
-      const when2 = parseWhen(raw);
-      let name = cleanTitle(raw)
-        .replace(/薬を?|サプリ(メント)?/g, '')
-        .trim() || '薬';
-      // "ビタミンを飲む" -> ビタミン
-      name = name.replace(/を$/, '').trim() || '薬';
-      const rawTimes = [];
-      if (when2.recurringSlot) rawTimes.push(when2.recurringSlot);
-      if (when2.timeStr) rawTimes.push(when2.timeStr);
-      if (/朝/.test(raw)) rawTimes.push('朝');
-      if (/昼/.test(raw)) rawTimes.push('昼');
-      if (/夜/.test(raw)) rawTimes.push('夜');
-      let uniq = dedupeTimes(rawTimes);
-      if (!uniq.length) uniq = ['08:00'];
-      const labels = uniq.map(t => normalizeTimeLabel(t).label);
-      const existing = state.medications.find(m =>
-        m.enabled !== false && String(m.name || '').trim() === name
-      );
-      if (existing) {
-        const newOnly = uniq.filter(t => !dedupeTimes(existing.times).includes(t));
-        return {
-          kind: 'medication',
-          label: '服薬（既存にマージ）',
-          name,
-          dose: existing.dose || '1回分',
-          times: uniq,
-          mergeIntoId: existing.id,
-          newTimes: newOnly,
-          summary: name + (newOnly.length
-            ? (' に ' + newOnly.map(t => normalizeTimeLabel(t).label).join('・') + ' を追加')
-            : '（追加する新しい時刻なし）'),
-          meta: newOnly.length
-            ? '既存の「' + name + '」に時刻を追加'
-            : '同じ薬・同じ時刻のため変更なし'
-        };
-      }
-      return {
-        kind: 'medication',
-        label: '服薬',
-        name,
-        dose: '1回分',
-        times: uniq,
-        summary: name + '（' + labels.join('・') + '）',
-        meta: '服薬リストに新規登録'
-      };
-    }
-
-    // Appointment / timed main task
-    if (when.hasDate || when.timeStr) {
-      let title = cleanTitle(raw);
-      title = title.replace(/^に/, '').trim() || raw;
-      const deadline = when.date ? when.date.toISOString() : null;
-      const dateLabel = when.date
-        ? (when.date.getMonth()+1) + '/' + when.date.getDate() +
-          '(' + WEEKDAY_NAMES[when.date.getDay()] + ')' +
-          (when.timeStr ? ' ' + when.timeStr : '')
-        : '';
-      return {
-        kind: 'main_task',
-        label: 'メインタスク',
-        title,
-        deadline,
-        summary: title,
-        meta: dateLabel ? '期限: ' + dateLabel : '任務として追加（未受注）',
-        trader: 'チャット'
-      };
-    }
-
-    // Default: subtask under a quick inbox main, or standalone todo as main with one sub
-    const title = raw;
-    return {
-      kind: 'todo',
-      label: 'サブタスク / ToDo',
-      title,
-      summary: title,
-      meta: '「インボックス」任務のサブタスクとして追加'
-    };
+    return CP.parseChat(raw, { medications: state.medications || [] });
   }
 
   function applyPreview(p) {
     if (!p) return;
     if (p.kind === 'shopping') {
       p.items.forEach(name => {
-        state.shopping.push({ id: uid(), name, qty: 1, checked: false, note: 'チャット', isExample: false });
+        state.shopping.push({ id: uid(), name, qty: 1, checked: false, note: p.note ? ('チャット ' + p.note) : 'チャット', isExample: false });
       });
       save();
       toast('買い物リストに追加しました');
@@ -1099,18 +958,28 @@
       return;
     }
     if (p.kind === 'main_task') {
+      const subs = (p.bring || []).map(it => ({ id: uid(), title: '持ち物: ' + it, done: false }));
+      subs.push({ id: uid(), title: '実施する', done: false });
+      const descParts = [];
+      if (p.memo) descParts.push('メモ: ' + p.memo);
+      if ((p.buy || []).length) descParts.push('買うもの: ' + p.buy.join('、') + (p.buyHint ? '（' + p.buyHint + '）' : '') + ' → 買い物リスト');
       const t = {
         id: uid(), title: p.title, trader: p.trader || 'チャット',
-        desc: 'チャットから追加', isExample: false, status: 'unaccepted',
-        deadline: p.deadline, failSoundPlayed: false, acceptedAt: null,
-        subs: [{ id: uid(), title: '実施する', done: false }],
+        desc: descParts.join('\n') || 'チャットから追加', isExample: false, status: 'unaccepted',
+        deadline: p.deadline, location: p.location || '',
+        failSoundPlayed: false, acceptedAt: null,
+        subs,
         deliveries: []
       };
       state.tasks.push(t);
+      (p.buy || []).forEach(name => {
+        state.shopping.push({ id: uid(), name, qty: 1, checked: false,
+          note: 'チャット（' + p.title + (p.buyHint ? '・' + p.buyHint : '') + '）', isExample: false });
+      });
       selectedId = t.id;
       ensureBathDailyTask();
       save();
-      toast('任務を追加しました（未受注）');
+      toast('任務を追加しました（未受注）' + ((p.buy || []).length ? ' ＋買い物' + p.buy.length + '件' : ''));
       return;
     }
     if (p.kind === 'todo') {
@@ -1139,6 +1008,7 @@
       exportedAt: new Date().toISOString(),
       mainTasks: state.tasks.filter(t => !isSystemTask(t)).map(t => ({
         title: t.title, trader: t.trader, desc: t.desc, deadline: t.deadline,
+        location: t.location || '',
         status: t.status,
         subs: (t.subs||[]).map(s => ({ title: s.title, done: !!s.done })),
         deliveries: (t.deliveries||[]).map(d => ({
@@ -1167,6 +1037,7 @@
         trader: mt.trader || 'インポート',
         desc: mt.desc || '',
         deadline: mt.deadline || null,
+        location: mt.location ? String(mt.location) : '',
         status: 'pending_review',
         failSoundPlayed: false,
         acceptedAt: null,
@@ -1255,7 +1126,7 @@
       const p = taskProgress(t);
       html += `<div class="task-card status-${st} ${t.id===selectedId?'active':''}" data-select="${t.id}">
         <div class="tc-title">${esc(t.title)}${t.isExample?'<span class="example-badge">サンプル</span>':''}<span class="status-pill ${st}">${STATUS_LABEL[st]}</span></div>
-        <div class="tc-meta">${esc(t.trader||'—')} · ${p.done}/${p.total}</div>
+        <div class="tc-meta">${esc(t.trader||'—')} · ${p.done}/${p.total}${t.location?' · 場所: '+esc(t.location):''}</div>
       </div>`;
     });
     list.innerHTML = html;
@@ -1278,6 +1149,7 @@
             <div class="detail-title">${esc(task.title)}</div>
             <div class="detail-desc">${esc(task.desc||'')}</div>
             <div class="detail-desc" style="margin-top:6px">期限: ${dl ? esc(dl) : 'なし'}</div>
+            ${task.location?`<div class="detail-desc detail-location">場所: ${esc(task.location)}</div>`:''}
             <div class="section-title" style="margin-top:10px">サブタスク</div>
             ${(task.subs||[]).map(s=>`<div class="obj-card"><div class="obj-text">${esc(s.title)}</div></div>`).join('')||'<div class="empty">なし</div>'}
             <div class="section-title">納品</div>
@@ -1299,6 +1171,7 @@
           <div class="detail-title">${esc(task.title)}${task.isExample?'<span class="example-badge">サンプル</span>':''}<span class="status-pill ${st}">${STATUS_LABEL[st]}</span></div>
           ${task.desc?`<div class="detail-desc">${esc(task.desc)}</div>`:''}
           <div class="detail-desc" style="margin-top:4px">期限: ${dl?esc(dl):'なし'}</div>
+          ${task.location?`<div class="detail-desc detail-location">場所: ${esc(task.location)}</div>`:''}
           <div class="progress-row"><span>OBJECTIVES</span><span class="progress-count">${p.done}/${p.total}</span></div>
           <div class="progress-bar"><div class="progress-fill ${st==='completed'?'done':''} ${st==='failed'?'failed':''}" style="width:${p.pct}%"></div></div>
           <div class="detail-actions">
@@ -1345,7 +1218,9 @@
           <div>${esc(m.text)}</div>
           <div class="preview-card">
             <div class="pc-type">${esc(p.label)}</div>
-            <div class="pc-body">${esc(p.summary)}</div>
+            ${Array.isArray(p.fields) && p.fields.length
+              ? `<div class="pc-fields">${p.fields.map(f => `<div class="pc-field"><span class="pc-k">${esc(f.k)}</span><span class="pc-v">${esc(f.v)}</span></div>`).join('')}</div>`
+              : `<div class="pc-body">${esc(p.summary)}</div>`}
             <div class="pc-meta">${esc(p.meta||'')}</div>
             <div class="preview-actions">
               <button class="btn btn-primary btn-sm" data-preview-ok="${m.id}" ${disabled}>追加する</button>
@@ -1485,6 +1360,7 @@
         document.getElementById('mainTrader').value = '';
         document.getElementById('mainDesc').value = '';
         document.getElementById('mainDeadline').value = '';
+        document.getElementById('mainLocation').value = '';
         openModal('modalMain');
         return;
       }
@@ -1548,6 +1424,7 @@
         document.getElementById('mainTrader').value = tk.trader || '';
         document.getElementById('mainDesc').value = tk.desc || '';
         document.getElementById('mainDeadline').value = toLocalInput(tk.deadline);
+        document.getElementById('mainLocation').value = tk.location || '';
         openModal('modalMain'); return;
       }
       if (t.hasAttribute('data-del-main')) {
@@ -1627,12 +1504,13 @@
       const desc = document.getElementById('mainDesc').value.trim();
       const dlVal = document.getElementById('mainDeadline').value;
       const deadline = dlVal ? new Date(dlVal).toISOString() : null;
+      const loc = (document.getElementById('mainLocation')?.value || '').trim();
       if (editingMainId) {
         const t = getTask(editingMainId);
-        if (t) { t.title = title; t.trader = trader; t.desc = desc; t.deadline = deadline; t.isExample = false; }
+        if (t) { t.title = title; t.trader = trader; t.desc = desc; t.deadline = deadline; t.location = loc; t.isExample = false; }
       } else {
         const t = {
-          id: uid(), title, trader, desc, deadline, isExample: false,
+          id: uid(), title, trader, desc, deadline, location: loc, isExample: false,
           status: 'unaccepted', failSoundPlayed: false, acceptedAt: null,
           subs: [], deliveries: []
         };
@@ -1701,7 +1579,9 @@
         applyPreview(msg.preview);
         msg.resolved = true;
         state.chat.push({ id: uid(), role: 'bot', text: '追加しました。', ts: Date.now() });
-        save(); playSound('check'); renderChat(); return;
+        save(); playSound('check'); renderChat();
+        try { renderTasks(); renderShop(); renderMed(); } catch (_) {}
+        return;
       }
       if (cancel) {
         const id = cancel.getAttribute('data-preview-cancel');
@@ -1716,7 +1596,7 @@
         const msg = state.chat.find(m => m.id === id);
         if (!msg || msg.resolved) return;
         msg.resolved = true;
-        const sug = msg.preview?.summary || '';
+        const sug = msg.preview?.source || msg.preview?.summary || '';
         document.getElementById('chatInput').value = sug;
         document.getElementById('chatInput').focus();
         state.chat.push({ id: uid(), role: 'bot', text: '入力欄に内容を戻しました。直して再送信してください。', ts: Date.now() });

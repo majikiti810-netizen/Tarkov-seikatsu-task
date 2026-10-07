@@ -311,3 +311,42 @@ body::before {
   .modal-backdrop { align-items: center; }
   .modal { border-bottom: 1px solid var(--border-lit); max-height: 80vh; }
 }
+
+
+/* Bath (入浴) */
+.bath-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--olive);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.bath-panel.required { border-left-color: var(--amber); }
+.bath-panel.danger { border-left-color: var(--red); border-color: var(--red); background: rgba(168,72,58,0.12); }
+.bath-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.bath-title {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.12em;
+  color: var(--olive-bright); text-transform: uppercase;
+}
+.bath-status {
+  font-family: var(--font-mono); font-size: 11px; padding: 2px 8px;
+  border: 1px solid var(--border);
+}
+.bath-status.ok { color: var(--green-done); border-color: var(--green-done); }
+.bath-status.bad { color: var(--red-bright); border-color: var(--red); }
+.bath-status.req { color: var(--amber); border-color: var(--amber-dim); }
+.bath-status.unset { color: var(--text-dim); }
+.bath-hint { font-size: 11px; color: var(--text-dim); margin: 8px 0; line-height: 1.4; }
+.bath-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.bath-streak-soft {
+  font-family: var(--font-mono); font-size: 11px; color: var(--amber);
+  margin-bottom: 8px;
+}
+.bath-inline-warn { margin: 0 0 8px; letter-spacing: 0.12em; }
+.bath-auto-note {
+  font-family: var(--font-mono); font-size: 10px; color: var(--amber);
+  margin-top: 8px;
+}
+.bath-warn-modal .bath-streak-msg {
+  font-size: 18px; letter-spacing: 0.16em; padding: 16px 8px;
+}

@@ -1,6 +1,6 @@
 # Tarkov生活タスク（デイリー任務）
 
-Tarkov風の生活サポートPWAデモ。タブ：任務・会話・買い物・服薬。
+Tarkov風の生活サポートPWAデモ。タブ：任務・会話・買い物・服薬。任務画面上部で入浴記録（明日予定あり→必須／連続なし3日目から赤警告）。
 
 - サイト本体はリポジトリ直下（`index.html`）。ビルド不要の静的サイトです。
 - Cloudflare Pages 設定：Framework preset = None / Build command = 空欄 / Build output directory = `/`

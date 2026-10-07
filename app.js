@@ -38,6 +38,22 @@
     const d = new Date();
     return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
   };
+  function dateKeyFromDate(d) {
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+  function addDaysKey(key, delta) {
+    const p = String(key).split('-').map(Number);
+    const d = new Date(p[0], p[1]-1, p[2]);
+    d.setDate(d.getDate() + delta);
+    return dateKeyFromDate(d);
+  }
+  function tomorrowKey() { return addDaysKey(todayKey(), 1); }
+  function localDayKeyFromIso(iso) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d)) return null;
+    return dateKeyFromDate(d);
+  }
 
   function toast(msg) {
     const el = document.getElementById('toast');
@@ -147,7 +163,10 @@
         { id: 'c0', role: 'bot', text: 'こんにちは。自然な日本語で追加できます。\n例:「明日15時に歯医者」「牛乳と卵を買う」「毎朝8時にビタミンを飲む」「部屋の掃除」', ts: Date.now() }
       ],
       settings: { medLinkDailyTask: true },
-      pendingReviewIds: []
+      pendingReviewIds: [],
+      bathLog: {},
+      localOutings: {},
+      bathMeta: { lastSeenDay: null, streakWarnedFor: null }
     };
   }
 
@@ -159,6 +178,9 @@
     p.chat = p.chat || [];
     p.settings = p.settings || { medLinkDailyTask: true };
     p.pendingReviewIds = p.pendingReviewIds || [];
+    p.bathLog = p.bathLog || {};
+    p.localOutings = p.localOutings || {};
+    p.bathMeta = p.bathMeta || { lastSeenDay: null, streakWarnedFor: null };
     migrateMedications(p);
     return p;
   }
@@ -458,6 +480,176 @@
     });
   }
 
+  // ===== BATH (入浴) =====
+  function hasOutingOn(dayKey) {
+    if (!dayKey) return false;
+    if (state.localOutings && state.localOutings[dayKey]) return true;
+    return (state.tasks || []).some(t => {
+      if (!t || t.isMedDaily || t.isBathDaily) return false;
+      if (t.status === 'failed') return false;
+      const dk = localDayKeyFromIso(t.deadline);
+      return dk === dayKey;
+    });
+  }
+
+  function isBathRequiredToday() {
+    return hasOutingOn(tomorrowKey());
+  }
+
+  function getBathToday() {
+    const v = state.bathLog[todayKey()];
+    if (v === true) return true;
+    if (v === false) return false;
+    return null;
+  }
+
+  function rollBathMisses() {
+    const today = todayKey();
+    state.bathMeta = state.bathMeta || { lastSeenDay: null, streakWarnedFor: null };
+    const last = state.bathMeta.lastSeenDay;
+    if (last && last < today) {
+      if (state.bathLog[last] === undefined) state.bathLog[last] = false;
+      let d = addDaysKey(last, 1);
+      while (d < today) {
+        if (state.bathLog[d] === undefined) state.bathLog[d] = false;
+        d = addDaysKey(d, 1);
+      }
+    }
+    state.bathMeta.lastSeenDay = today;
+  }
+
+  function getBathMissStreak() {
+    // 過去の連続「なし」を数え、今日未入浴なら +1（初回起動で未記録だけのときは 0）
+    let past = 0;
+    let d = addDaysKey(todayKey(), -1);
+    for (let i = 0; i < 60; i++) {
+      const v = state.bathLog[d];
+      if (v === true) break;
+      if (v === false) { past++; d = addDaysKey(d, -1); continue; }
+      break;
+    }
+    const today = getBathToday();
+    if (today === true) return 0;
+    if (today === false) return past + 1;
+    if (past > 0 || isBathRequiredToday()) return past + 1;
+    return 0;
+  }
+
+  function ensureBathDailyTask() {
+    const required = isBathRequiredToday();
+    const bathed = getBathToday() === true;
+    let t = state.tasks.find(x => x.isBathDaily);
+    if (!t) {
+      t = {
+        id: uid(), title: '入浴', trader: 'システム',
+        desc: required ? '明日予定あり → 本日必須' : '本日の入浴記録',
+        isExample: false, isBathDaily: true, status: 'in_progress',
+        deadline: null, failSoundPlayed: false, acceptedAt: Date.now(),
+        subs: [], deliveries: []
+      };
+      state.tasks.unshift(t);
+    }
+    t.desc = required ? '明日予定あり → 本日必須' : '本日の入浴記録';
+    const subTitle = required ? '入浴する（必須・明日予定）' : '入浴する';
+    let sub = (t.subs || []).find(s => s.isBathSub) || (t.subs || [])[0];
+    if (!sub) {
+      sub = { id: uid(), title: subTitle, done: bathed, isBathSub: true };
+      t.subs = [sub];
+    } else {
+      sub.title = subTitle;
+      sub.done = bathed;
+      sub.isBathSub = true;
+      t.subs = [sub];
+    }
+    if (t.status === 'unaccepted') t.status = 'in_progress';
+    t.status = bathed ? 'completed' : 'in_progress';
+    return t;
+  }
+
+  function syncBathDailyTask() {
+    rollBathMisses();
+    ensureBathDailyTask();
+  }
+
+  function setBathToday(bathed) {
+    const day = todayKey();
+    state.bathLog[day] = !!bathed;
+    ensureBathDailyTask();
+    save();
+    if (bathed) {
+      playSound('complete');
+      toast('入浴 記録しました');
+      if (state.bathMeta) state.bathMeta.streakWarnedFor = null;
+    } else {
+      playSound('fail');
+      toast('入浴なし を記録');
+    }
+    maybeShowBathStreakWarning(true);
+    renderTasks();
+  }
+
+  function setTomorrowOuting(flag) {
+    const tm = tomorrowKey();
+    if (flag) state.localOutings[tm] = true;
+    else delete state.localOutings[tm];
+    ensureBathDailyTask();
+    save();
+    playSound('click');
+    toast(flag ? '明日予定あり（入浴必須）' : '明日予定を解除');
+    renderTasks();
+  }
+
+  function maybeShowBathStreakWarning(forceSound) {
+    const streak = getBathMissStreak();
+    const el = document.getElementById('bathStreakPopup');
+    if (!el) return streak;
+    if (streak >= 3 && getBathToday() !== true) {
+      el.querySelector('.bath-streak-msg').textContent = '入浴なし' + streak + '日目';
+      el.classList.add('show');
+      const key = todayKey() + ':' + streak;
+      if (forceSound || state.bathMeta.streakWarnedFor !== key) {
+        state.bathMeta.streakWarnedFor = key;
+        save();
+        playSound('fail').then(ok => { if (!ok) pendingFailSound = true; });
+      }
+    } else {
+      el.classList.remove('show');
+    }
+    return streak;
+  }
+
+  function renderBathPanel() {
+    const required = isBathRequiredToday();
+    const status = getBathToday();
+    const streak = getBathMissStreak();
+    const outingTm = !!state.localOutings[tomorrowKey()];
+    const outingAuto = hasOutingOn(tomorrowKey()) && !outingTm;
+    let statusLabel = '未記録';
+    let statusClass = 'unset';
+    if (status === true) { statusLabel = '済'; statusClass = 'ok'; }
+    else if (status === false) { statusLabel = 'なし'; statusClass = 'bad'; }
+    else if (required) { statusLabel = '必須・未'; statusClass = 'req'; }
+
+    return `<div class="bath-panel ${required ? 'required' : ''} ${streak >= 3 && status !== true ? 'danger' : ''}" id="bathPanel">
+      <div class="bath-head">
+        <div class="bath-title">入浴 ${required ? '<span class="status-pill pending_review">必須</span>' : ''}</div>
+        <div class="bath-status ${statusClass}">${statusLabel}</div>
+      </div>
+      <div class="bath-hint">${required
+        ? '明日に予定あり → 今日の入浴が必須です'
+        : '明日予定がある日の前日は入浴必須。連続なしは3日目から警告'}</div>
+      ${streak >= 3 && status !== true
+        ? `<div class="banner bad show bath-inline-warn">◆ 入浴なし${streak}日目 ◆</div>`
+        : (streak > 0 && status !== true ? `<div class="bath-streak-soft">連続なし ${streak}日</div>` : '')}
+      <div class="bath-actions">
+        <button class="btn btn-primary btn-sm" data-bath="1" ${status === true ? 'disabled' : ''}>入浴した</button>
+        <button class="btn btn-danger btn-sm" data-bath="0" ${status === false ? 'disabled' : ''}>入浴なし</button>
+        <button class="btn btn-sm ${outingTm ? 'btn-primary' : ''}" data-outing-tm="${outingTm ? '0' : '1'}">${outingTm ? '明日予定✓' : '明日予定あり'}</button>
+      </div>
+      ${outingAuto ? '<div class="bath-auto-note">任務の期限から明日予定を検出</div>' : ''}
+    </div>`;
+  }
+
   // ===== CHAT PARSER =====
   function parseWhen(text) {
     const now = new Date();
@@ -673,6 +865,7 @@
       };
       state.tasks.push(t);
       selectedId = t.id;
+      ensureBathDailyTask();
       save();
       toast('任務を追加しました（未受注）');
       return;
@@ -701,7 +894,7 @@
     const payload = {
       schemaVersion: '1.0',
       exportedAt: new Date().toISOString(),
-      mainTasks: state.tasks.filter(t => !t.isMedDaily).map(t => ({
+      mainTasks: state.tasks.filter(t => !t.isMedDaily && !t.isBathDaily).map(t => ({
         title: t.title, trader: t.trader, desc: t.desc, deadline: t.deadline,
         status: t.status,
         subs: (t.subs||[]).map(s => ({ title: s.title, done: !!s.done })),
@@ -796,11 +989,12 @@
 
   function renderTasks() {
     checkDeadlines();
+    syncBathDailyTask();
     const list = document.getElementById('taskList');
     const pending = state.tasks.filter(t => t.status === 'pending_review');
     const normal = state.tasks.filter(t => t.status !== 'pending_review');
 
-    let html = '';
+    let html = renderBathPanel();
     if (pending.length) {
       html += '<div class="section-title">未確認レビュー<span class="status-pill pending_review">' + pending.length + '</span></div>';
       pending.forEach(t => {
@@ -866,7 +1060,7 @@
           <div class="detail-actions">
             ${st==='in_progress'?`<button class="btn btn-danger btn-sm" data-fail-main="${task.id}">失敗にする</button>`:''}
             <button class="btn btn-sm" data-edit-main="${task.id}">編集</button>
-            ${!task.isMedDaily?`<button class="btn btn-sm btn-danger" data-del-main="${task.id}">削除</button>`:''}
+            ${!(task.isMedDaily||task.isBathDaily)?`<button class="btn btn-sm btn-danger" data-del-main="${task.id}">削除</button>`:''}
           </div>
         </div>
         <div class="banner ok ${st==='completed'?'show':''}">◆ TASK COMPLETED ◆</div>
@@ -875,12 +1069,12 @@
         ${st==='failed'?`<div class="accept-panel"><p>失敗しました。再開できます</p><button class="btn btn-accept" data-restart="${task.id}">再開する</button></div>`:''}
         <div class="objectives ${st==='unaccepted'?'locked':''}">
           ${st==='unaccepted'?'<div class="lock-note">受注後にチェック／納品が有効（追加は可能）</div>':''}
-          <div class="section-title" style="padding:0 12px">サブタスク ${(st==='in_progress'||st==='unaccepted')&&!task.isMedDaily?'<button class="btn btn-sm" data-add-sub>＋</button>':''}</div>
+          <div class="section-title" style="padding:0 12px">サブタスク ${(st==='in_progress'||st==='unaccepted')&&!task.isMedDaily&&!task.isBathDaily?'<button class="btn btn-sm" data-add-sub>＋</button>':''}</div>
           ${(task.subs||[]).map(s => `
             <div class="obj-card ${s.done?'done':''}">
               <div class="checkbox ${s.done?'checked':''}" data-toggle-sub="${s.id}"></div>
               <div class="obj-body"><div class="obj-text">${esc(s.title)}</div></div>
-              ${(st==='in_progress'||st==='unaccepted')&&!task.isMedDaily?`<button class="btn btn-sm btn-danger" data-del-sub="${s.id}">✕</button>`:''}
+              ${(st==='in_progress'||st==='unaccepted')&&!task.isMedDaily&&!task.isBathDaily?`<button class="btn btn-sm btn-danger" data-del-sub="${s.id}">✕</button>`:''}
             </div>`).join('') || '<div class="empty">なし</div>'}
           <div class="section-title" style="padding:0 12px">納品 ${(st==='in_progress'||st==='unaccepted')?'<button class="btn btn-sm" data-add-del>＋</button>':''}</div>
           ${(task.deliveries||[]).map(d => `
@@ -1003,9 +1197,28 @@
     document.querySelectorAll('.modal-backdrop').forEach(bd => {
       bd.addEventListener('click', e => { if (e.target === bd) { playSound('click'); bd.classList.remove('show'); } });
     });
+    const bathPop = document.getElementById('bathStreakPopup');
+    if (bathPop) {
+      bathPop.addEventListener('click', e => {
+        if (e.target === bathPop || e.target.closest('[data-close-bath-warn]')) {
+          playSound('click');
+          bathPop.classList.remove('show');
+        }
+      });
+    }
 
     // Task list delegation
     document.getElementById('taskList').addEventListener('click', e => {
+      const bathBtn = e.target.closest('[data-bath]');
+      if (bathBtn) {
+        setBathToday(bathBtn.getAttribute('data-bath') === '1');
+        return;
+      }
+      const outingBtn = e.target.closest('[data-outing-tm]');
+      if (outingBtn) {
+        setTomorrowOuting(outingBtn.getAttribute('data-outing-tm') === '1');
+        return;
+      }
       if (e.target.id === 'btnNewMain' || e.target.closest('#btnNewMain')) {
         editingMainId = null;
         document.getElementById('modalMainTitle').textContent = 'メインタスク作成';
@@ -1080,6 +1293,8 @@
       }
       if (t.hasAttribute('data-del-main')) {
         const id = t.getAttribute('data-del-main');
+        const victim = getTask(id);
+        if (victim && (victim.isMedDaily || victim.isBathDaily)) { toast('システム任務は削除できません'); return; }
         if (!confirm('削除しますか？')) return;
         state.tasks = state.tasks.filter(x => x.id !== id);
         if (selectedId === id) selectedId = state.tasks[0]?.id || null;
@@ -1107,9 +1322,17 @@
           const timeKey = rest.join('__');
           setMedTaken(medId, timeKey, sub.done);
         }
+        if (task.isBathDaily && sub.isBathSub) {
+          state.bathLog[todayKey()] = !!sub.done;
+          if (sub.done && state.bathMeta) state.bathMeta.streakWarnedFor = null;
+          else if (!sub.done) playSound('fail');
+        }
         const just = syncCompletion(task);
         save();
-        playSound(just ? 'complete' : 'check');
+        if (!(task.isBathDaily && sub.isBathSub && !sub.done)) {
+          playSound(just ? 'complete' : 'check');
+        }
+        maybeShowBathStreakWarning(!!(task.isBathDaily && sub.isBathSub && !sub.done));
         renderTasks(); return;
       }
       if (t.hasAttribute('data-del-sub')) {
@@ -1379,6 +1602,7 @@
       save();
       selectedId = state.tasks.find(t => t.status === 'in_progress')?.id || state.tasks[0]?.id;
       syncMedDailyTask();
+      syncBathDailyTask();
       closeModal('modalSettings');
       switchTab('tasks');
       toast('サンプルで初期化しました');
@@ -1396,10 +1620,12 @@
     document.getElementById('btnMute').classList.toggle('active', muted);
     bind();
     syncMedDailyTask();
+    syncBathDailyTask();
     checkDeadlines();
     scheduleMedNotifications();
     switchTab('tasks');
     updateDataLayerStatus();
+    maybeShowBathStreakWarning(false);
 
     if (window.DataLayer && DataLayer.requestPersist) {
       DataLayer.requestPersist().then((ok) => {

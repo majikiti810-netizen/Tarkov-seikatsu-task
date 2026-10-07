@@ -245,11 +245,26 @@ body::before {
   border-top: 1px solid var(--border); background: var(--bg-panel);
   padding-bottom: calc(8px + var(--tab-h) + var(--safe-b));
 }
-.chat-input-bar input {
+.chat-input-bar { align-items: flex-end; }
+.chat-input-bar input, .chat-input-bar textarea {
   flex: 1; padding: 10px 12px; background: var(--bg-input); border: 1px solid var(--border);
-  color: var(--text-bright); font-size: 14px; outline: none;
+  color: var(--text-bright); font-size: 16px; outline: none;
+  font-family: inherit; line-height: 1.4; resize: none; min-height: 42px; max-height: 160px;
 }
-.chat-input-bar input:focus { border-color: var(--olive); }
+.chat-input-bar input:focus, .chat-input-bar textarea:focus { border-color: var(--olive); }
+.bubble.user { white-space: pre-wrap; }
+.pc-item { padding: 6px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
+.pc-item.skipped { opacity: 0.4; }
+.pc-item.skipped .pc-fields { text-decoration: line-through; }
+.pc-kinds { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.kind-chip {
+  font-size: 11px; padding: 4px 8px; background: var(--bg-card); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
+}
+.kind-chip.guess { border-style: dashed; border-color: var(--amber-dim); }
+.kind-chip.active { background: var(--olive-dim); color: var(--text-bright); border-color: var(--olive-bright); border-style: solid; }
+.kind-chip:disabled { cursor: default; }
+.pc-skip { font-size: 11px; }
 
 /* Shopping / Med */
 .list-item {

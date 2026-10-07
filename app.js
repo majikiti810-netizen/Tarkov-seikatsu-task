@@ -186,7 +186,9 @@
       laundryLog: {},
       cleanLog: {},
       trashLog: {},
-      choreMeta: { lastSeenDay: null, warnedFor: null }
+      choreMeta: { lastSeenDay: null, warnedFor: null },
+      dailyRequired: [],
+      dailyLog: {}
     };
   }
 
@@ -205,6 +207,8 @@
     p.cleanLog = p.cleanLog || {};
     p.trashLog = p.trashLog || {};
     p.choreMeta = p.choreMeta || { lastSeenDay: null, warnedFor: null };
+    p.dailyRequired = Array.isArray(p.dailyRequired) ? p.dailyRequired : [];
+    p.dailyLog = p.dailyLog || {};
     migrateMedications(p);
     return p;
   }
@@ -502,6 +506,19 @@
         medNotifTimers.push(tid);
       });
     });
+    // 毎日の必須タスク（時刻ありのみ・アプリ表示中）
+    (state.dailyRequired || []).filter(d => d.enabled !== false && d.time).forEach(def => {
+      const hhmm = canonicalizeTimeToken(def.time);
+      if (!hhmm) return;
+      const [h, m] = hhmm.split(':').map(Number);
+      const d = new Date(); d.setHours(h, m, 0, 0);
+      if (d.getTime() <= now) return;
+      const t = state.tasks.find(x => x.isDailyRequired && x.dailyId === def.id);
+      if (t && t.status === 'completed') return;
+      medNotifTimers.push(setTimeout(() => {
+        try { new Notification('毎日の必須タスク', { body: def.title + '（' + hhmm + '）', icon: 'icons/icon-192.png', tag: 'daily-' + def.id }); } catch (_) {}
+      }, d.getTime() - now));
+    });
   }
 
   // ===== BATH (入浴) =====
@@ -509,7 +526,7 @@
     if (!dayKey) return false;
     if (state.localOutings && state.localOutings[dayKey]) return true;
     return (state.tasks || []).some(t => {
-      if (!t || isSystemTask(t)) return false;
+      if (!t || isSystemTask(t) || t.isDailyRequired) return false;
       if (t.status === 'failed') return false;
       const dk = localDayKeyFromIso(t.deadline);
       return dk === dayKey;
@@ -895,68 +912,78 @@
 
   // ===== CHAT PARSER =====
   // 本体は parser.js（DOM非依存・node でテスト可能: tests/parse.test.mjs）。
-  // 1文から 任務 / 日時・期限 / 場所 / 持ち物 / 買うもの / メモ を抽出する。
+  // 1文（または箇条書き/複数行）から 任務 / 日時・期限 / 場所 / 持ち物 / 買うもの / メモ を抽出する。
+  const CHAT_KINDS = [
+    ['main_task', 'メイン任務'], ['todo', 'サブタスク'], ['daily', '毎日の必須'],
+    ['shopping', '買い物'], ['medication', '服薬']
+  ];
+  function chatParser() { return (typeof window !== 'undefined' && window.ChatParser) || null; }
   function parseChat(text) {
-    const CP = (typeof window !== 'undefined' && window.ChatParser) || null;
+    const CP = chatParser();
     const raw = String(text || '').trim();
     if (!raw) return null;
     if (!CP) {
       return { kind: 'todo', label: 'サブタスク / ToDo', source: raw, title: raw, summary: raw,
         meta: '「インボックス」任務のサブタスクとして追加' };
     }
-    return CP.parseChat(raw, { medications: state.medications || [] });
+    return CP.parseMessage(raw, { medications: state.medications || [] });
+  }
+  // 種類を切り替えて再解析（持ち物の引き継ぎ・推定種類を保持）
+  function reparseAs(p, kind) {
+    const CP = chatParser();
+    if (!CP || !p) return p;
+    const np = CP.parseChat(p.source, {
+      medications: state.medications || [], forceKind: kind,
+      guessKind: p.guessKind || p.kind, extraBring: p.extraBring
+    });
+    if (!np) return p;
+    np.skip = !!p.skip;
+    return np;
   }
 
-  function applyPreview(p) {
-    if (!p) return;
+  function addShoppingItem(name, note) {
+    state.shopping.push({ id: uid(), name, qty: 1, checked: false, note: note || 'チャット', isExample: false });
+  }
+
+  function applyMedication(p) {
+    const meds = Array.isArray(p.meds) && p.meds.length ? p.meds
+      : [{ name: p.name, dose: p.dose, times: p.times, mergeIntoId: p.mergeIntoId }];
+    let added = 0, merged = 0;
+    meds.forEach(m => {
+      const times = dedupeTimes(m.times || []);
+      const generic = d => !d || d === '1回分';
+      let existing = m.mergeIntoId ? state.medications.find(x => x.id === m.mergeIntoId) : null;
+      if (!existing) {
+        existing = state.medications.find(x =>
+          x.enabled !== false && String(x.name || '').trim() === String(m.name || '').trim() &&
+          (generic(m.dose) || generic(x.dose) || String(x.dose).replace(/\s+/g, '') === m.dose));
+      }
+      if (existing) {
+        existing.times = dedupeTimes(dedupeTimes(existing.times).concat(times));
+        if (generic(existing.dose) && !generic(m.dose)) existing.dose = m.dose;
+        existing.isExample = false;
+        merged++;
+      } else {
+        state.medications.push({
+          id: uid(), name: m.name, dose: m.dose || '1回分',
+          times, linkToDailyTask: true, enabled: true, isExample: false
+        });
+        added++;
+      }
+    });
+    syncMedDailyTask();
+    scheduleMedNotifications();
+    return '服薬' + (added ? ' 新規' + added : '') + (merged ? ' 更新' + merged : '');
+  }
+
+  // 戻り値: トースト用の短い文言
+  function applyOne(p) {
+    if (!p || p.skip) return '';
     if (p.kind === 'shopping') {
-      p.items.forEach(name => {
-        state.shopping.push({ id: uid(), name, qty: 1, checked: false, note: p.note ? ('チャット ' + p.note) : 'チャット', isExample: false });
-      });
-      save();
-      toast('買い物リストに追加しました');
-      return;
+      p.items.forEach(name => addShoppingItem(name, p.note ? ('チャット ' + p.note) : 'チャット'));
+      return '買い物' + p.items.length + '件';
     }
-    if (p.kind === 'medication') {
-      const times = dedupeTimes(p.times || []);
-      if (p.mergeIntoId) {
-        const existing = state.medications.find(m => m.id === p.mergeIntoId);
-        if (existing) {
-          const before = dedupeTimes(existing.times);
-          existing.times = dedupeTimes(before.concat(times));
-          existing.isExample = false;
-          const added = existing.times.filter(t => !before.includes(t));
-          syncMedDailyTask();
-          scheduleMedNotifications();
-          save();
-          toast(added.length ? ('時刻を追加しました（' + added.join(', ') + '）') : '変更なし（既に登録済み）');
-          return;
-        }
-      }
-      // name-match fallback merge
-      const byName = state.medications.find(m =>
-        m.enabled !== false && String(m.name || '').trim() === String(p.name || '').trim()
-      );
-      if (byName) {
-        const before = dedupeTimes(byName.times);
-        byName.times = dedupeTimes(before.concat(times));
-        byName.isExample = false;
-        syncMedDailyTask();
-        scheduleMedNotifications();
-        save();
-        toast('既存の服薬にマージしました');
-        return;
-      }
-      state.medications.push({
-        id: uid(), name: p.name, dose: p.dose || '1回分',
-        times, linkToDailyTask: true, enabled: true, isExample: false
-      });
-      syncMedDailyTask();
-      scheduleMedNotifications();
-      save();
-      toast('服薬を登録しました');
-      return;
-    }
+    if (p.kind === 'medication') return applyMedication(p);
     if (p.kind === 'main_task') {
       const subs = (p.bring || []).map(it => ({ id: uid(), title: '持ち物: ' + it, done: false }));
       subs.push({ id: uid(), title: '実施する', done: false });
@@ -967,20 +994,30 @@
         id: uid(), title: p.title, trader: p.trader || 'チャット',
         desc: descParts.join('\n') || 'チャットから追加', isExample: false, status: 'unaccepted',
         deadline: p.deadline, location: p.location || '',
+        // カレンダー取り込み互換フィールド（将来: source:'calendar', externalId）
+        start: p.start || null, end: null, source: 'chat', externalId: null,
         failSoundPlayed: false, acceptedAt: null,
         subs,
         deliveries: []
       };
       state.tasks.push(t);
-      (p.buy || []).forEach(name => {
-        state.shopping.push({ id: uid(), name, qty: 1, checked: false,
-          note: 'チャット（' + p.title + (p.buyHint ? '・' + p.buyHint : '') + '）', isExample: false });
-      });
+      (p.buy || []).forEach(name => addShoppingItem(name, 'チャット（' + p.title + (p.buyHint ? '・' + p.buyHint : '') + '）'));
       selectedId = t.id;
       ensureBathDailyTask();
-      save();
-      toast('任務を追加しました（未受注）' + ((p.buy || []).length ? ' ＋買い物' + p.buy.length + '件' : ''));
-      return;
+      return '任務1件' + ((p.buy || []).length ? '＋買い物' + p.buy.length + '件' : '');
+    }
+    if (p.kind === 'daily') {
+      const def = {
+        id: uid(), title: p.title, time: p.time || null, location: p.location || '',
+        bring: (p.bring || []).slice(), memo: p.memo || '',
+        recurring: 'daily', required: true, enabled: true, createdAt: Date.now()
+      };
+      state.dailyRequired.push(def);
+      ensureDailyRequiredTasks();
+      const t = state.tasks.find(x => x.isDailyRequired && x.dailyId === def.id);
+      if (t) selectedId = t.id;
+      scheduleMedNotifications();
+      return '毎日の必須タスク1件';
     }
     if (p.kind === 'todo') {
       let inbox = state.tasks.find(t => t.isInbox);
@@ -996,9 +1033,68 @@
       inbox.subs.push({ id: uid(), title: p.title, done: false });
       if (inbox.status === 'completed') inbox.status = 'in_progress';
       selectedId = inbox.id;
-      save();
-      toast('ToDo を追加しました');
+      return 'ToDo1件';
     }
+    return '';
+  }
+
+  function applyPreview(p) {
+    if (!p) return;
+    const list = p.kind === 'multi' ? p.items : [p];
+    const done = list.map(applyOne).filter(Boolean);
+    save();
+    toast(done.length ? ('追加: ' + done.join(' / ')) : '追加する項目がありません');
+  }
+
+  // ===== 毎日の必須タスク（繰り返し・入浴/家事と同じく日替わりで再生成） =====
+  function ensureDailyRequiredTasks() {
+    state.dailyRequired = state.dailyRequired || [];
+    state.dailyLog = state.dailyLog || {};
+    const today = todayKey();
+    const defs = state.dailyRequired.filter(d => d.enabled !== false);
+    const ids = new Set(defs.map(d => d.id));
+    let changed = false;
+    const before = state.tasks.length;
+    state.tasks = state.tasks.filter(t => !t.isDailyRequired || ids.has(t.dailyId));
+    if (state.tasks.length !== before) changed = true;
+    defs.forEach(def => {
+      let t = state.tasks.find(x => x.isDailyRequired && x.dailyId === def.id);
+      const subTitle = def.title + (def.time ? '（' + def.time + '）' : '');
+      if (!t) {
+        t = {
+          id: uid(), title: def.title, trader: '毎日', isExample: false,
+          isDailyRequired: true, dailyId: def.id, dayKey: today,
+          desc: '', deadline: null, location: def.location || '',
+          status: 'in_progress', failSoundPlayed: false, acceptedAt: Date.now(),
+          source: 'daily', externalId: null, start: null, end: null,
+          subs: [{ id: uid(), title: subTitle, done: false, isDailySub: true }]
+            .concat((def.bring || []).map(b => ({ id: uid(), title: '持ち物: ' + b, done: false }))),
+          deliveries: []
+        };
+        state.tasks.push(t);
+        changed = true;
+      }
+      if (t.dayKey !== today) {
+        changed = true;
+        // 前日の結果を記録して本日分にリセット
+        const prev = t.dayKey;
+        if (prev) {
+          state.dailyLog[prev] = state.dailyLog[prev] || {};
+          if (state.dailyLog[prev][def.id] === undefined) state.dailyLog[prev][def.id] = objectivesComplete(t);
+        }
+        (t.subs || []).forEach(s => { s.done = false; });
+        t.dayKey = today;
+        t.status = 'in_progress';
+        t.failSoundPlayed = false;
+      }
+      t.title = def.title;
+      t.location = def.location || '';
+      t.desc = '毎日の必須タスク' + (def.time ? '・' + def.time + 'リマインド' : '') + (def.memo ? '\nメモ: ' + def.memo : '');
+      const main = (t.subs || []).find(s => s.isDailySub);
+      if (main) main.title = subTitle;
+      if (t.status === 'unaccepted' || t.status === 'failed') t.status = 'in_progress';
+    });
+    if (changed) save();
   }
 
   // ===== IMPORT / EXPORT =====
@@ -1006,9 +1102,11 @@
     const payload = {
       schemaVersion: '1.0',
       exportedAt: new Date().toISOString(),
-      mainTasks: state.tasks.filter(t => !isSystemTask(t)).map(t => ({
+      mainTasks: state.tasks.filter(t => !isSystemTask(t) && !t.isDailyRequired).map(t => ({
         title: t.title, trader: t.trader, desc: t.desc, deadline: t.deadline,
         location: t.location || '',
+        start: t.start || null, end: t.end || null,
+        source: t.source || null, externalId: t.externalId || null,
         status: t.status,
         subs: (t.subs||[]).map(s => ({ title: s.title, done: !!s.done })),
         deliveries: (t.deliveries||[]).map(d => ({
@@ -1038,6 +1136,8 @@
         desc: mt.desc || '',
         deadline: mt.deadline || null,
         location: mt.location ? String(mt.location) : '',
+        start: mt.start || null, end: mt.end || null,
+        source: mt.source || 'import', externalId: mt.externalId || null,
         status: 'pending_review',
         failSoundPlayed: false,
         acceptedAt: null,
@@ -1105,6 +1205,7 @@
     checkDeadlines();
     syncBathDailyTask();
     syncChoreDailyTasks();
+    ensureDailyRequiredTasks();
     const list = document.getElementById('taskList');
     const pending = state.tasks.filter(t => t.status === 'pending_review');
     const normal = state.tasks.filter(t => t.status !== 'pending_review');
@@ -1125,7 +1226,7 @@
       const st = effectiveStatus(t);
       const p = taskProgress(t);
       html += `<div class="task-card status-${st} ${t.id===selectedId?'active':''}" data-select="${t.id}">
-        <div class="tc-title">${esc(t.title)}${t.isExample?'<span class="example-badge">サンプル</span>':''}<span class="status-pill ${st}">${STATUS_LABEL[st]}</span></div>
+        <div class="tc-title">${esc(t.title)}${t.isExample?'<span class="example-badge">サンプル</span>':''}${t.isDailyRequired&&st!=='completed'?'<span class="status-pill pending_review">毎日必須</span>':''}<span class="status-pill ${st}">${STATUS_LABEL[st]}</span></div>
         <div class="tc-meta">${esc(t.trader||'—')} · ${p.done}/${p.total}${t.location?' · 場所: '+esc(t.location):''}</div>
       </div>`;
     });
@@ -1208,22 +1309,38 @@
       </div>`;
   }
 
+  function previewItemHtml(p, mid, idx, disabled) {
+    const chips = CHAT_KINDS.map(([k, label]) =>
+      `<button class="kind-chip ${p.kind===k?'active':''} ${p.guessKind===k?'guess':''}" data-preview-kind="${k}" data-mid="${mid}" data-idx="${idx}" ${disabled}>${label}</button>`
+    ).join('');
+    const body = Array.isArray(p.fields) && p.fields.length
+      ? `<div class="pc-fields">${p.fields.map(f => `<div class="pc-field"><span class="pc-k">${esc(f.k)}</span><span class="pc-v">${esc(f.v)}</span></div>`).join('')}</div>`
+      : `<div class="pc-body">${esc(p.summary)}</div>`;
+    return `<div class="pc-item ${p.skip?'skipped':''}">
+      <div class="pc-kinds">${chips}</div>
+      ${body}
+      <div class="pc-meta">${esc(p.meta||'')}</div>
+      ${idx >= 0 ? `<button class="btn btn-sm pc-skip" data-preview-skip="${mid}" data-idx="${idx}" ${disabled}>${p.skip?'↺ 戻す（スキップ中）':'この項目をスキップ'}</button>` : ''}
+    </div>`;
+  }
+
   function renderChat() {
     const log = document.getElementById('chatLog');
     log.innerHTML = state.chat.map(m => {
       if (m.preview) {
         const p = m.preview;
         const disabled = m.resolved ? 'disabled' : '';
+        const isMulti = p.kind === 'multi';
+        const inner = isMulti
+          ? p.items.map((it, i) => previewItemHtml(it, m.id, i, disabled)).join('')
+          : previewItemHtml(p, m.id, -1, disabled);
         return `<div class="bubble bot">
           <div>${esc(m.text)}</div>
           <div class="preview-card">
-            <div class="pc-type">${esc(p.label)}</div>
-            ${Array.isArray(p.fields) && p.fields.length
-              ? `<div class="pc-fields">${p.fields.map(f => `<div class="pc-field"><span class="pc-k">${esc(f.k)}</span><span class="pc-v">${esc(f.v)}</span></div>`).join('')}</div>`
-              : `<div class="pc-body">${esc(p.summary)}</div>`}
-            <div class="pc-meta">${esc(p.meta||'')}</div>
+            <div class="pc-type">${esc(isMulti ? p.label : (CHAT_KINDS.find(x => x[0] === p.kind) || [0, p.label])[1])}</div>
+            ${inner}
             <div class="preview-actions">
-              <button class="btn btn-primary btn-sm" data-preview-ok="${m.id}" ${disabled}>追加する</button>
+              <button class="btn btn-primary btn-sm" data-preview-ok="${m.id}" ${disabled}>${isMulti ? 'まとめて追加' : '追加する'}</button>
               <button class="btn btn-sm" data-preview-edit="${m.id}" ${disabled}>修正</button>
               <button class="btn btn-sm btn-danger" data-preview-cancel="${m.id}" ${disabled}>やめる</button>
             </div>
@@ -1431,7 +1548,8 @@
         const id = t.getAttribute('data-del-main');
         const victim = getTask(id);
         if (victim && isSystemTask(victim)) { toast('システム任務は削除できません'); return; }
-        if (!confirm('削除しますか？')) return;
+        if (!confirm(victim && victim.isDailyRequired ? '毎日の必須タスクを削除しますか？（明日以降も出なくなります）' : '削除しますか？')) return;
+        if (victim && victim.isDailyRequired) state.dailyRequired = state.dailyRequired.filter(d => d.id !== victim.dailyId);
         state.tasks = state.tasks.filter(x => x.id !== id);
         if (selectedId === id) selectedId = state.tasks[0]?.id || null;
         save(); playSound('click'); renderTasks(); return;
@@ -1463,6 +1581,9 @@
           if (sub.done && state.bathMeta) state.bathMeta.streakWarnedFor = null;
           else if (!sub.done) playSound('fail');
         }
+        if (task.isDailyRequired) {
+          state.dailyLog[todayKey()] = state.dailyLog[todayKey()] || {};
+        }
         if (sub.isChoreSub && (task.isLaundryDaily || task.isCleanDaily || task.isTrashDaily)) {
           const ctype = sub.choreType || task.choreType;
           if (ctype) choreLogMap(ctype)[todayKey()] = !!sub.done;
@@ -1470,6 +1591,7 @@
           else if (!sub.done) playSound('fail');
         }
         const just = syncCompletion(task);
+        if (task.isDailyRequired) state.dailyLog[todayKey()][task.dailyId] = objectivesComplete(task);
         save();
         const choreUndo = sub.isChoreSub && !sub.done && (task.isLaundryDaily || task.isCleanDaily || task.isTrashDaily);
         if (!(task.isBathDaily && sub.isBathSub && !sub.done) && !choreUndo) {
@@ -1508,6 +1630,11 @@
       if (editingMainId) {
         const t = getTask(editingMainId);
         if (t) { t.title = title; t.trader = trader; t.desc = desc; t.deadline = deadline; t.location = loc; t.isExample = false; }
+        if (t && t.isDailyRequired) {
+          const def = state.dailyRequired.find(d => d.id === t.dailyId);
+          if (def) { def.title = title; def.location = loc; }
+          t.deadline = null; // 毎日タスクは期限なし（時刻はリマインドのみ）
+        }
       } else {
         const t = {
           id: uid(), title, trader, desc, deadline, location: loc, isExample: false,
@@ -1543,24 +1670,64 @@
 
     // Chat
     document.getElementById('chatSend').addEventListener('click', sendChat);
-    document.getElementById('chatInput').addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); sendChat(); }
+    const chatInputEl = document.getElementById('chatInput');
+    const isTouchDevice = () => (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) || ('ontouchstart' in window);
+    const autoGrow = () => { chatInputEl.style.height = 'auto'; chatInputEl.style.height = Math.min(chatInputEl.scrollHeight, 160) + 'px'; };
+    chatInputEl.addEventListener('input', autoGrow);
+    chatInputEl.addEventListener('keydown', e => {
+      // スマホ: Enter は改行（送信はボタン）。PC: Enter=送信 / Shift+Enter=改行
+      if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+      if (isTouchDevice() || e.shiftKey) return;
+      e.preventDefault(); sendChat();
     });
+
+    function lastOpenPreview() {
+      for (let i = state.chat.length - 1; i >= 0; i--) {
+        const m = state.chat[i];
+        if (m.preview) return m.resolved ? null : m;
+      }
+      return null;
+    }
 
     function sendChat() {
       const input = document.getElementById('chatInput');
       const text = input.value.trim();
       if (!text) return;
       input.value = '';
+      autoGrow();
       state.chat.push({ id: uid(), role: 'user', text, ts: Date.now() });
       const parsed = parseChat(text);
       if (!parsed) {
-        state.chat.push({ id: uid(), role: 'bot', text: 'すみません、理解できませんでした。', ts: Date.now() });
+        state.chat.push({ id: uid(), role: 'bot', text: 'すみません、理解できませんでした。内容（何を・いつ・どこで）を書いて送ってください。', ts: Date.now() });
+      } else if (parsed.kind === 'correction') {
+        // 「サブタスクではなく〜」等は任務にしない → 直前のプレビューの種類を変更
+        const target = lastOpenPreview();
+        let reply;
+        if (!target) {
+          reply = '変更できる未確定のプレビューがありません。内容をもう一度送って、カードの種類ボタンで選んでください。';
+        } else if (!parsed.targetKind) {
+          reply = 'どの種類にしますか？上のカードの種類ボタン（メイン任務／サブタスク／毎日の必須／買い物／服薬）で選んでください。';
+        } else if (target.preview.kind === 'multi') {
+          const open = target.preview.items.filter(it => !it.skip);
+          if (open.length === 1) {
+            const i = target.preview.items.indexOf(open[0]);
+            target.preview.items[i] = reparseAs(open[0], parsed.targetKind);
+            reply = '種類を「' + (CHAT_KINDS.find(x => x[0] === parsed.targetKind) || [0, ''])[1] + '」に変更しました。';
+          } else {
+            reply = '複数の項目があります。上のカードで項目ごとに種類ボタンを選んでください。';
+          }
+        } else {
+          target.preview = reparseAs(target.preview, parsed.targetKind);
+          reply = '種類を「' + (CHAT_KINDS.find(x => x[0] === parsed.targetKind) || [0, ''])[1] + '」に変更しました。上のカードで確認して「追加する」を押してください。';
+        }
+        state.chat.push({ id: uid(), role: 'bot', text: reply, ts: Date.now() });
       } else {
         const mid = uid();
         state.chat.push({
           id: mid, role: 'bot',
-          text: 'こう追加します。よければ「追加する」を押してください。',
+          text: parsed.kind === 'multi'
+            ? parsed.items.length + '件に分けました。種類を確認して「まとめて追加」を押してください。'
+            : 'こう追加します。種類を確認して「追加する」を押してください。',
           preview: parsed, resolved: false, ts: Date.now()
         });
         pendingPreview = mid;
@@ -1572,6 +1739,22 @@
       const ok = e.target.closest('[data-preview-ok]');
       const edit = e.target.closest('[data-preview-edit]');
       const cancel = e.target.closest('[data-preview-cancel]');
+      const kindBtn = e.target.closest('[data-preview-kind]');
+      const skipBtn = e.target.closest('[data-preview-skip]');
+      if (kindBtn || skipBtn) {
+        const el = kindBtn || skipBtn;
+        const msg = state.chat.find(m => m.id === (kindBtn ? el.getAttribute('data-mid') : el.getAttribute('data-preview-skip')));
+        if (!msg || msg.resolved || !msg.preview) return;
+        const idx = parseInt(el.getAttribute('data-idx'), 10);
+        const multi = msg.preview.kind === 'multi';
+        const cur = multi ? msg.preview.items[idx] : msg.preview;
+        if (!cur) return;
+        let next = cur;
+        if (kindBtn) next = reparseAs(cur, el.getAttribute('data-preview-kind'));
+        else next = Object.assign({}, cur, { skip: !cur.skip });
+        if (multi) msg.preview.items[idx] = next; else msg.preview = next;
+        save(); playSound('click'); renderChat(); return;
+      }
       if (ok) {
         const id = ok.getAttribute('data-preview-ok');
         const msg = state.chat.find(m => m.id === id);
@@ -1579,7 +1762,7 @@
         applyPreview(msg.preview);
         msg.resolved = true;
         state.chat.push({ id: uid(), role: 'bot', text: '追加しました。', ts: Date.now() });
-        save(); playSound('check'); renderChat();
+        save(); playSound('start'); renderChat();
         try { renderTasks(); renderShop(); renderMed(); } catch (_) {}
         return;
       }
@@ -1645,7 +1828,7 @@
         if (host.status === 'completed') host.status = 'in_progress';
         state.shopping = state.shopping.filter(x => x.id !== s.id);
         selectedId = host.id;
-        save(); playSound('deliver'); toast('購入品の納品タスクに変換しました'); renderShop(); return;
+        save(); playSound('start'); toast('購入品の納品タスクに変換しました'); renderShop(); return;
       }
     });
 

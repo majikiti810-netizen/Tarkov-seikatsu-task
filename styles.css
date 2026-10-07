@@ -350,3 +350,22 @@ body::before {
 .bath-warn-modal .bath-streak-msg {
   font-size: 18px; letter-spacing: 0.16em; padding: 16px 8px;
 }
+
+
+/* Chore routines (洗濯 / 掃除 / ゴミ出し) */
+.chore-panel { border-left-color: var(--amber-dim, #8a7a3a); }
+.chore-row {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.chore-row:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+.chore-row.danger .chore-row-title { color: var(--amber); }
+.chore-row-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.chore-row-title {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em;
+  color: var(--olive-bright);
+}
+.chore-warn-msg {
+  font-size: 16px; letter-spacing: 0.12em; padding: 14px 8px;
+}

@@ -55,6 +55,22 @@
     return dateKeyFromDate(d);
   }
 
+  function weekdayOfKey(key) {
+    const p = String(key).split('-').map(Number);
+    return new Date(p[0], p[1] - 1, p[2]).getDay();
+  }
+  function isLaundryCleanDay(key) {
+    const w = weekdayOfKey(key || todayKey());
+    return w === 1 || w === 4; // 月・木
+  }
+  function isTrashDay(key) {
+    const w = weekdayOfKey(key || todayKey());
+    return w === 2 || w === 5; // 火・金
+  }
+  function isSystemTask(t) {
+    return !!(t && (t.isMedDaily || t.isBathDaily || t.isLaundryDaily || t.isCleanDaily || t.isTrashDaily));
+  }
+
   function toast(msg) {
     const el = document.getElementById('toast');
     el.textContent = msg;
@@ -166,7 +182,11 @@
       pendingReviewIds: [],
       bathLog: {},
       localOutings: {},
-      bathMeta: { lastSeenDay: null, streakWarnedFor: null }
+      bathMeta: { lastSeenDay: null, streakWarnedFor: null },
+      laundryLog: {},
+      cleanLog: {},
+      trashLog: {},
+      choreMeta: { lastSeenDay: null, warnedFor: null }
     };
   }
 
@@ -181,6 +201,10 @@
     p.bathLog = p.bathLog || {};
     p.localOutings = p.localOutings || {};
     p.bathMeta = p.bathMeta || { lastSeenDay: null, streakWarnedFor: null };
+    p.laundryLog = p.laundryLog || {};
+    p.cleanLog = p.cleanLog || {};
+    p.trashLog = p.trashLog || {};
+    p.choreMeta = p.choreMeta || { lastSeenDay: null, warnedFor: null };
     migrateMedications(p);
     return p;
   }
@@ -485,7 +509,7 @@
     if (!dayKey) return false;
     if (state.localOutings && state.localOutings[dayKey]) return true;
     return (state.tasks || []).some(t => {
-      if (!t || t.isMedDaily || t.isBathDaily) return false;
+      if (!t || isSystemTask(t)) return false;
       if (t.status === 'failed') return false;
       const dk = localDayKeyFromIso(t.deadline);
       return dk === dayKey;
@@ -647,6 +671,225 @@
         <button class="btn btn-sm ${outingTm ? 'btn-primary' : ''}" data-outing-tm="${outingTm ? '0' : '1'}">${outingTm ? '明日予定✓' : '明日予定あり'}</button>
       </div>
       ${outingAuto ? '<div class="bath-auto-note">任務の期限から明日予定を検出</div>' : ''}
+    </div>`;
+  }
+
+  // ===== CHORES (洗濯 / 掃除 / ゴミ出し) =====
+  // 月・木: 洗濯＋掃除（翌朝ゴミ出し用） / 火・金: 燃えるゴミ（西条地区）
+  function choreLogMap(type) {
+    if (type === 'laundry') return state.laundryLog;
+    if (type === 'clean') return state.cleanLog;
+    return state.trashLog;
+  }
+
+  function getChoreToday(type) {
+    const v = choreLogMap(type)[todayKey()];
+    if (v === true) return true;
+    if (v === false) return false;
+    return null;
+  }
+
+  function rollChoreMisses() {
+    const today = todayKey();
+    state.choreMeta = state.choreMeta || { lastSeenDay: null, warnedFor: null };
+    const last = state.choreMeta.lastSeenDay;
+    if (last && last < today) {
+      let d = last;
+      while (d < today) {
+        if (isLaundryCleanDay(d)) {
+          if (state.laundryLog[d] === undefined) state.laundryLog[d] = false;
+          if (state.cleanLog[d] === undefined) state.cleanLog[d] = false;
+        }
+        if (isTrashDay(d)) {
+          if (state.trashLog[d] === undefined) state.trashLog[d] = false;
+        }
+        d = addDaysKey(d, 1);
+      }
+    }
+    state.choreMeta.lastSeenDay = today;
+  }
+
+  function ensureTypedChoreTask(type, title, desc, subTitle, done) {
+    const flag = type === 'laundry' ? 'isLaundryDaily'
+      : type === 'clean' ? 'isCleanDaily' : 'isTrashDaily';
+    let t = state.tasks.find(x => x[flag]);
+    if (!t) {
+      t = {
+        id: uid(), title, trader: 'システム',
+        desc, isExample: false, status: 'in_progress',
+        deadline: null, failSoundPlayed: false, acceptedAt: Date.now(),
+        subs: [], deliveries: [], choreType: type
+      };
+      t[flag] = true;
+      state.tasks.unshift(t);
+    }
+    t.title = title;
+    t.desc = desc;
+    t.choreType = type;
+    t[flag] = true;
+    let sub = (t.subs || []).find(s => s.isChoreSub) || (t.subs || [])[0];
+    if (!sub) {
+      sub = { id: uid(), title: subTitle, done: !!done, isChoreSub: true, choreType: type };
+      t.subs = [sub];
+    } else {
+      sub.title = subTitle;
+      sub.done = !!done;
+      sub.isChoreSub = true;
+      sub.choreType = type;
+      t.subs = [sub];
+    }
+    if (t.status === 'unaccepted' || t.status === 'failed') t.status = 'in_progress';
+    t.status = done ? 'completed' : 'in_progress';
+    return t;
+  }
+
+  function ensureChoreDailyTasks() {
+    rollChoreMisses();
+    const today = todayKey();
+    const lac = isLaundryCleanDay(today);
+    const tr = isTrashDay(today);
+
+    if (lac) {
+      ensureTypedChoreTask(
+        'laundry', '洗濯',
+        '月・木必須 → 翌朝（火/金）にゴミ出しできる流れ',
+        '洗濯完了チェック',
+        getChoreToday('laundry') === true
+      );
+      ensureTypedChoreTask(
+        'clean', '掃除',
+        '月・木：1か所15分＋写真1枚（メモ可）',
+        '1か所15分＋写真1枚（メモ可）',
+        getChoreToday('clean') === true
+      );
+    } else {
+      state.tasks = state.tasks.filter(t => !t.isLaundryDaily && !t.isCleanDaily);
+    }
+
+    if (tr) {
+      ensureTypedChoreTask(
+        'trash', 'ゴミ出し（燃えるゴミ）',
+        '西条地区：火・金の朝（洗濯の翌朝）',
+        '燃えるゴミを出した',
+        getChoreToday('trash') === true
+      );
+    } else {
+      state.tasks = state.tasks.filter(t => !t.isTrashDaily);
+    }
+  }
+
+  function syncChoreDailyTasks() {
+    ensureChoreDailyTasks();
+  }
+
+  function setChoreToday(type, done) {
+    const day = todayKey();
+    if (type === 'laundry' && !isLaundryCleanDay(day)) return;
+    if (type === 'clean' && !isLaundryCleanDay(day)) return;
+    if (type === 'trash' && !isTrashDay(day)) return;
+    choreLogMap(type)[day] = !!done;
+    ensureChoreDailyTasks();
+    save();
+    if (done) {
+      playSound('complete');
+      const msg = type === 'laundry' ? '洗濯 完了' : type === 'clean' ? '掃除 完了' : 'ゴミ出し 完了';
+      toast(msg);
+      if (state.choreMeta) state.choreMeta.warnedFor = null;
+    } else {
+      playSound('fail');
+      toast('未完了に戻しました');
+    }
+    maybeShowChoreWarning(true);
+    renderTasks();
+  }
+
+  function todayIncompleteChores() {
+    const today = todayKey();
+    const miss = [];
+    if (isLaundryCleanDay(today)) {
+      if (getChoreToday('laundry') !== true) miss.push('洗濯');
+      if (getChoreToday('clean') !== true) miss.push('掃除');
+    }
+    if (isTrashDay(today)) {
+      if (getChoreToday('trash') !== true) miss.push('ゴミ出し');
+    }
+    return miss;
+  }
+
+  function nextChoreHint() {
+    for (let i = 1; i <= 7; i++) {
+      const d = addDaysKey(todayKey(), i);
+      const name = WEEKDAY_NAMES[weekdayOfKey(d)];
+      if (isLaundryCleanDay(d)) return '次: ' + name + '曜 洗濯・掃除';
+      if (isTrashDay(d)) return '次: ' + name + '曜 ゴミ出し（燃えるゴミ）';
+    }
+    return '';
+  }
+
+  function maybeShowChoreWarning(forceSound) {
+    const miss = todayIncompleteChores();
+    const el = document.getElementById('choreWarnPopup');
+    if (!el) return miss;
+    if (miss.length) {
+      el.querySelector('.chore-warn-msg').textContent = miss.join('・') + ' 未完了';
+      el.classList.add('show');
+      const key = todayKey() + ':' + miss.join(',');
+      if (forceSound || state.choreMeta.warnedFor !== key) {
+        state.choreMeta.warnedFor = key;
+        save();
+        playSound('fail').then(ok => { if (!ok) pendingFailSound = true; });
+      }
+    } else {
+      el.classList.remove('show');
+    }
+    return miss;
+  }
+
+  function choreRowHtml(type, label, hint, doneLabel) {
+    const status = getChoreToday(type);
+    let statusLabel = '必須・未';
+    let statusClass = 'req';
+    if (status === true) { statusLabel = '済'; statusClass = 'ok'; }
+    else if (status === false) { statusLabel = '未'; statusClass = 'bad'; }
+    const danger = status !== true;
+    return `<div class="chore-row ${danger ? 'danger' : ''}">
+      <div class="chore-row-head">
+        <div class="chore-row-title">${label} <span class="status-pill pending_review">必須</span></div>
+        <div class="bath-status ${statusClass}">${statusLabel}</div>
+      </div>
+      <div class="bath-hint">${hint}</div>
+      <div class="bath-actions">
+        <button class="btn btn-primary btn-sm" data-chore="${type}" data-chore-done="1" ${status === true ? 'disabled' : ''}>${doneLabel}</button>
+        <button class="btn btn-danger btn-sm" data-chore="${type}" data-chore-done="0" ${status === false ? 'disabled' : ''}>未完了</button>
+      </div>
+    </div>`;
+  }
+
+  function renderChorePanel() {
+    const today = todayKey();
+    const lac = isLaundryCleanDay(today);
+    const tr = isTrashDay(today);
+    const miss = todayIncompleteChores();
+    const wname = WEEKDAY_NAMES[weekdayOfKey(today)];
+    let body = '';
+    if (lac) {
+      body += choreRowHtml('laundry', '洗濯', '完了条件: 洗濯が終わるまで（翌朝ゴミ出し用）', '洗濯した');
+      body += choreRowHtml('clean', '掃除', '完了条件: 1か所15分＋写真1枚（メモ可）', '掃除した');
+    }
+    if (tr) {
+      body += choreRowHtml('trash', 'ゴミ出し（燃えるゴミ）', '西条地区・火金の朝。完了条件: 燃えるゴミを出した', '出した');
+    }
+    if (!lac && !tr) {
+      body = `<div class="bath-hint">今日（${wname}）のルーチンなし。${esc(nextChoreHint())}</div>
+        <div class="bath-auto-note">月木=洗濯・掃除 / 火金=燃えるゴミ（西条）</div>`;
+    }
+    return `<div class="bath-panel chore-panel ${miss.length ? 'danger required' : (lac || tr ? 'required' : '')}" id="chorePanel">
+      <div class="bath-head">
+        <div class="bath-title">生活ルーチン ${miss.length ? '<span class="status-pill failed">未完了</span>' : ''}</div>
+        <div class="bath-status ${miss.length ? 'req' : ((lac || tr) ? 'unset' : 'ok')}">${miss.length ? miss.join('・') : ((lac || tr) ? '本日' : 'オフ')}</div>
+      </div>
+      ${miss.length ? `<div class="banner bad show bath-inline-warn">◆ ${esc(miss.join('・'))} 未完了 ◆</div>` : ''}
+      ${body}
     </div>`;
   }
 
@@ -894,7 +1137,7 @@
     const payload = {
       schemaVersion: '1.0',
       exportedAt: new Date().toISOString(),
-      mainTasks: state.tasks.filter(t => !t.isMedDaily && !t.isBathDaily).map(t => ({
+      mainTasks: state.tasks.filter(t => !isSystemTask(t)).map(t => ({
         title: t.title, trader: t.trader, desc: t.desc, deadline: t.deadline,
         status: t.status,
         subs: (t.subs||[]).map(s => ({ title: s.title, done: !!s.done })),
@@ -990,11 +1233,12 @@
   function renderTasks() {
     checkDeadlines();
     syncBathDailyTask();
+    syncChoreDailyTasks();
     const list = document.getElementById('taskList');
     const pending = state.tasks.filter(t => t.status === 'pending_review');
     const normal = state.tasks.filter(t => t.status !== 'pending_review');
 
-    let html = renderBathPanel();
+    let html = renderBathPanel() + renderChorePanel();
     if (pending.length) {
       html += '<div class="section-title">未確認レビュー<span class="status-pill pending_review">' + pending.length + '</span></div>';
       pending.forEach(t => {
@@ -1060,7 +1304,7 @@
           <div class="detail-actions">
             ${st==='in_progress'?`<button class="btn btn-danger btn-sm" data-fail-main="${task.id}">失敗にする</button>`:''}
             <button class="btn btn-sm" data-edit-main="${task.id}">編集</button>
-            ${!(task.isMedDaily||task.isBathDaily)?`<button class="btn btn-sm btn-danger" data-del-main="${task.id}">削除</button>`:''}
+            ${!isSystemTask(task)?`<button class="btn btn-sm btn-danger" data-del-main="${task.id}">削除</button>`:''}
           </div>
         </div>
         <div class="banner ok ${st==='completed'?'show':''}">◆ TASK COMPLETED ◆</div>
@@ -1069,12 +1313,12 @@
         ${st==='failed'?`<div class="accept-panel"><p>失敗しました。再開できます</p><button class="btn btn-accept" data-restart="${task.id}">再開する</button></div>`:''}
         <div class="objectives ${st==='unaccepted'?'locked':''}">
           ${st==='unaccepted'?'<div class="lock-note">受注後にチェック／納品が有効（追加は可能）</div>':''}
-          <div class="section-title" style="padding:0 12px">サブタスク ${(st==='in_progress'||st==='unaccepted')&&!task.isMedDaily&&!task.isBathDaily?'<button class="btn btn-sm" data-add-sub>＋</button>':''}</div>
+          <div class="section-title" style="padding:0 12px">サブタスク ${(st==='in_progress'||st==='unaccepted')&&!isSystemTask(task)?'<button class="btn btn-sm" data-add-sub>＋</button>':''}</div>
           ${(task.subs||[]).map(s => `
             <div class="obj-card ${s.done?'done':''}">
               <div class="checkbox ${s.done?'checked':''}" data-toggle-sub="${s.id}"></div>
               <div class="obj-body"><div class="obj-text">${esc(s.title)}</div></div>
-              ${(st==='in_progress'||st==='unaccepted')&&!task.isMedDaily&&!task.isBathDaily?`<button class="btn btn-sm btn-danger" data-del-sub="${s.id}">✕</button>`:''}
+              ${(st==='in_progress'||st==='unaccepted')&&!isSystemTask(task)?`<button class="btn btn-sm btn-danger" data-del-sub="${s.id}">✕</button>`:''}
             </div>`).join('') || '<div class="empty">なし</div>'}
           <div class="section-title" style="padding:0 12px">納品 ${(st==='in_progress'||st==='unaccepted')?'<button class="btn btn-sm" data-add-del>＋</button>':''}</div>
           ${(task.deliveries||[]).map(d => `
@@ -1208,6 +1452,16 @@
     }
 
     // Task list delegation
+    const chorePop = document.getElementById('choreWarnPopup');
+    if (chorePop) {
+      chorePop.addEventListener('click', e => {
+        if (e.target === chorePop || e.target.closest('[data-close-chore-warn]')) {
+          playSound('click');
+          chorePop.classList.remove('show');
+        }
+      });
+    }
+
     document.getElementById('taskList').addEventListener('click', e => {
       const bathBtn = e.target.closest('[data-bath]');
       if (bathBtn) {
@@ -1217,6 +1471,11 @@
       const outingBtn = e.target.closest('[data-outing-tm]');
       if (outingBtn) {
         setTomorrowOuting(outingBtn.getAttribute('data-outing-tm') === '1');
+        return;
+      }
+      const choreBtn = e.target.closest('[data-chore]');
+      if (choreBtn) {
+        setChoreToday(choreBtn.getAttribute('data-chore'), choreBtn.getAttribute('data-chore-done') === '1');
         return;
       }
       if (e.target.id === 'btnNewMain' || e.target.closest('#btnNewMain')) {
@@ -1294,7 +1553,7 @@
       if (t.hasAttribute('data-del-main')) {
         const id = t.getAttribute('data-del-main');
         const victim = getTask(id);
-        if (victim && (victim.isMedDaily || victim.isBathDaily)) { toast('システム任務は削除できません'); return; }
+        if (victim && isSystemTask(victim)) { toast('システム任務は削除できません'); return; }
         if (!confirm('削除しますか？')) return;
         state.tasks = state.tasks.filter(x => x.id !== id);
         if (selectedId === id) selectedId = state.tasks[0]?.id || null;
@@ -1327,12 +1586,20 @@
           if (sub.done && state.bathMeta) state.bathMeta.streakWarnedFor = null;
           else if (!sub.done) playSound('fail');
         }
+        if (sub.isChoreSub && (task.isLaundryDaily || task.isCleanDaily || task.isTrashDaily)) {
+          const ctype = sub.choreType || task.choreType;
+          if (ctype) choreLogMap(ctype)[todayKey()] = !!sub.done;
+          if (sub.done && state.choreMeta) state.choreMeta.warnedFor = null;
+          else if (!sub.done) playSound('fail');
+        }
         const just = syncCompletion(task);
         save();
-        if (!(task.isBathDaily && sub.isBathSub && !sub.done)) {
+        const choreUndo = sub.isChoreSub && !sub.done && (task.isLaundryDaily || task.isCleanDaily || task.isTrashDaily);
+        if (!(task.isBathDaily && sub.isBathSub && !sub.done) && !choreUndo) {
           playSound(just ? 'complete' : 'check');
         }
         maybeShowBathStreakWarning(!!(task.isBathDaily && sub.isBathSub && !sub.done));
+        if (choreUndo || (sub.isChoreSub && sub.done)) maybeShowChoreWarning(!!choreUndo);
         renderTasks(); return;
       }
       if (t.hasAttribute('data-del-sub')) {
@@ -1603,6 +1870,7 @@
       selectedId = state.tasks.find(t => t.status === 'in_progress')?.id || state.tasks[0]?.id;
       syncMedDailyTask();
       syncBathDailyTask();
+      syncChoreDailyTasks();
       closeModal('modalSettings');
       switchTab('tasks');
       toast('サンプルで初期化しました');
@@ -1621,11 +1889,13 @@
     bind();
     syncMedDailyTask();
     syncBathDailyTask();
+    syncChoreDailyTasks();
     checkDeadlines();
     scheduleMedNotifications();
     switchTab('tasks');
     updateDataLayerStatus();
     maybeShowBathStreakWarning(false);
+    maybeShowChoreWarning(false);
 
     if (window.DataLayer && DataLayer.requestPersist) {
       DataLayer.requestPersist().then((ok) => {

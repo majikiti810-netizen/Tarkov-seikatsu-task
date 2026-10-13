@@ -206,7 +206,10 @@
       trashLog: {},
       choreMeta: { lastSeenDay: null, warnedFor: null },
       dailyRequired: [],
-      dailyLog: {}
+      dailyLog: {},
+      healthLog: [],
+      popupShown: {},
+      lifeMeta: { lastOpenDay: null, recoveryShownDay: null }
     };
     return migrateObjectives(st);
   }
@@ -228,6 +231,9 @@
     p.choreMeta = p.choreMeta || { lastSeenDay: null, warnedFor: null };
     p.dailyRequired = Array.isArray(p.dailyRequired) ? p.dailyRequired : [];
     p.dailyLog = p.dailyLog || {};
+    p.healthLog = Array.isArray(p.healthLog) ? p.healthLog : [];
+    p.popupShown = p.popupShown || {};
+    p.lifeMeta = p.lifeMeta || { lastOpenDay: null, recoveryShownDay: null };
     migrateMedications(p);
     migrateObjectives(p);
     return p;
@@ -363,6 +369,7 @@
   function syncCompletion(task) {
     if (task.status === 'in_progress' && objectivesComplete(task)) {
       task.status = 'completed';
+      task.completedAt = new Date().toISOString();
       return true;
     }
     if (task.status === 'completed' && !objectivesComplete(task)) task.status = 'in_progress';
@@ -599,6 +606,18 @@
       medNotifTimers.push(setTimeout(() => {
         try { new Notification('毎日の必須タスク', { body: def.title + '（' + hhmm + '）', icon: 'icons/icon-192.png', tag: 'daily-' + def.id }); } catch (_) {}
       }, d.getTime() - now));
+    });
+    // 期限付き任務: 24時間前・3時間前（アプリ表示中のみ。setTimeout上限内）
+    state.tasks.forEach(t => {
+      if (!t.deadline || isSystemTask(t) || effectiveStatus(t) === 'completed' || t.status === 'pending_review') return;
+      const dl = Date.parse(t.deadline); if (isNaN(dl)) return;
+      [[24, '24時間'], [3, '3時間']].forEach(([h, label]) => {
+        const at = dl - h * 3600e3;
+        if (at <= now || at - now > 2147483000) return;
+        medNotifTimers.push(setTimeout(() => {
+          try { new Notification('期限まで' + label, { body: t.title, icon: 'icons/icon-192.png', tag: 'dl-' + t.id + '-' + h }); } catch (_) {}
+        }, at - now));
+      });
     });
   }
 
@@ -1366,6 +1385,7 @@
     const meta = [esc(t.trader || '—')];
     if (t.location) meta.push('◎ ' + esc(t.location));
     if (t.isMedDaily && st !== 'completed') { const nx = medNextLabel(); if (nx) meta.push(esc(nx)); }
+    if (isSnoozed(t) && st !== 'completed') meta.push('後で ' + esc(snoozeLabel(t.snoozeUntil)) + '〜');
     return `<div class="task-card status-${st} ${t.id===selectedId?'active':''} ${lvl==='amber'?'dl-amber':''} ${lvl==='red'?'dl-red':''}" data-select="${t.id}" ${t.deadline?'data-dl-row':''}>
       <div class="tc-row1">
         <span class="tc-ico">${taskIcon(t)}</span>
@@ -1465,6 +1485,7 @@
     html += `<div class="list-head">
       <div class="section-title" style="margin:0">任務一覧 <span class="list-count">✓ ${doneCount}/${normal.length}</span></div>
       <div class="list-head-actions">
+        <button class="btn btn-sm" data-open-health="">♡ 体調</button>
         <button class="btn btn-sm ${showCompleted?'btn-on':''}" id="btnShowDone">${showCompleted?'☑':'☐'} 完了を表示</button>
         <button class="btn btn-sm btn-primary" id="btnNewMain">＋ 追加</button>
       </div>
@@ -1480,6 +1501,8 @@
           const so = (STATUS_ORDER[a.st] ?? 9) - (STATUS_ORDER[b.st] ?? 9);
           if (so) return so;
           if (g === 'dl') return (Date.parse(a.t.deadline) || 0) - (Date.parse(b.t.deadline) || 0);
+          const sz = (isSnoozed(a.t) ? 1 : 0) - (isSnoozed(b.t) ? 1 : 0);
+          if (sz) return sz;
           return a.i - b.i;
         });
       const gDone = all.filter(t => effectiveStatus(t) === 'completed').length;
@@ -1543,7 +1566,7 @@
     let medTools = '';
     if (task.isMedDaily) {
       const nx = medNextLabel();
-      medTools = `<div class="med-tools">${nx&&st!=='completed'?`<span class="med-next-inline">${esc(nx)}</span>`:'<span></span>'}<button class="btn btn-sm" data-open-med-settings>⚙ 薬を管理</button></div>`;
+      medTools = `<div class="med-tools">${nx&&st!=='completed'?`<span class="med-next-inline">${esc(nx)}</span>`:'<span></span>'}<span><button class="btn btn-sm" data-open-health="服薬">♡ 体調メモ</button> <button class="btn btn-sm" data-open-med-settings>⚙ 薬を管理</button></span></div>`;
     }
 
     detail.innerHTML = `
@@ -1561,7 +1584,9 @@
           <div class="progress-row"><span>進捗</span><span class="progress-count">${p.done}/${p.total}</span></div>
           <div class="progress-bar"><div class="progress-fill ${st==='completed'?'done':''} ${st==='failed'?'failed':''}" style="width:${p.pct}%"></div></div>
           <div class="detail-actions">
-            ${st==='in_progress'&&!isSys?`<button class="btn btn-danger btn-sm" data-fail-main="${task.id}">失敗にする</button>`:''}
+            ${st==='in_progress'&&!isSys?`<button class="btn btn-danger btn-sm" data-fail-main="${task.id}">${task.deadline?'失敗にする':'未達・後でやる'}</button>`:''}
+            ${(st==='in_progress'||st==='unaccepted')&&LF().canSnooze(task)&&!isSnoozed(task)?`<button class="btn btn-sm" data-snooze-open="${task.id}">後でやる</button>`:''}
+            ${isSnoozed(task)&&st!=='completed'?`<button class="btn btn-sm" data-unsnooze="${task.id}">後回しを解除（${esc(snoozeLabel(task.snoozeUntil))}）</button>`:''}
             ${!task.isMedDaily?`<button class="btn btn-sm" data-edit-main="${task.id}">編集</button>`:''}
             ${!isSys?`<button class="btn btn-sm btn-danger" data-del-main="${task.id}">削除</button>`:''}
           </div>
@@ -1839,7 +1864,7 @@
     });
 
     document.getElementById('taskDetail').addEventListener('click', e => {
-      const t = e.target.closest('[data-accept],[data-restart],[data-fail-main],[data-edit-main],[data-del-main],[data-add-sub],[data-add-del],[data-toggle-sub],[data-del-sub],[data-hand-over],[data-del-del],[data-approve],[data-discard],[data-obj-inc],[data-obj-dec],[data-obj-ready],[data-obj-unready],[data-open-med-settings],[data-back-list]');
+      const t = e.target.closest('[data-accept],[data-restart],[data-fail-main],[data-edit-main],[data-del-main],[data-add-sub],[data-add-del],[data-toggle-sub],[data-del-sub],[data-hand-over],[data-del-del],[data-approve],[data-discard],[data-obj-inc],[data-obj-dec],[data-obj-ready],[data-obj-unready],[data-open-med-settings],[data-back-list],[data-open-health],[data-snooze-open],[data-unsnooze]');
       if (!t) return;
       const task = selectedId ? getTask(selectedId) : null;
 
@@ -1849,6 +1874,9 @@
         return;
       }
       if (t.hasAttribute('data-open-med-settings')) { openMedSettings(); return; }
+      if (t.hasAttribute('data-open-health')) { openHealthModal(t.getAttribute('data-open-health') || ''); return; }
+      if (t.hasAttribute('data-snooze-open')) { const tk = getTask(t.getAttribute('data-snooze-open')); if (tk) openFailModal(tk, true); return; }
+      if (t.hasAttribute('data-unsnooze')) { const tk = getTask(t.getAttribute('data-unsnooze')); if (tk) { delete tk.snoozeUntil; save(); playSound('click'); renderTasks(); } return; }
 
       if (t.hasAttribute('data-approve')) {
         const id = t.getAttribute('data-approve');
@@ -1883,9 +1911,7 @@
       if (t.hasAttribute('data-fail-main')) {
         const tk = getTask(t.getAttribute('data-fail-main'));
         if (!tk || effectiveStatus(tk) !== 'in_progress') return;
-        if (!confirm('失敗にしますか？')) return;
-        tk.status = 'failed'; tk.failSoundPlayed = true;
-        save(); playSound('fail'); renderTasks(); return;
+        openFailModal(tk); return;
       }
       if (t.hasAttribute('data-edit-main')) {
         const id = t.getAttribute('data-edit-main');
@@ -2311,6 +2337,283 @@
   }
 
   // ===== INIT =====
+  // ===== LIFE: 期限ポップアップ / 立て直し / 体調ログ / 振り返り / MacroDroid =====
+  function LF() { return window.LifeFeatures; }
+  function isSnoozed(t) { return !!(t && t.snoozeUntil && Date.parse(t.snoozeUntil) > Date.now()); }
+  function snoozeLabel(iso) {
+    const d = new Date(iso); if (isNaN(d)) return '';
+    const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    return dateKeyFromDate(d) === todayKey() ? '今日 ' + hm : (dateKeyFromDate(d) === tomorrowKey() ? '明日 ' + hm : (d.getMonth()+1) + '/' + d.getDate() + ' ' + hm);
+  }
+  function snoozeTask(task, which) {
+    if (!LF().canSnooze(task)) { toast('期限付きの任務は後回しにできません'); return false; }
+    task.snoozeUntil = LF().snoozeTarget(Date.now(), which);
+    if (task.status === 'failed') task.status = 'in_progress';
+    save();
+    toast('後でやる: ' + snoozeLabel(task.snoozeUntil) + '〜');
+    return true;
+  }
+
+  // --- B. 期限が近いタスクの赤いポップアップ ---
+  let dlPopupCurrent = null;
+  const DL_TEXT = { '24h': '期限まで24時間を切りました', '3h': '期限まで3時間を切りました', over: '期限を過ぎました' };
+  function maybeShowDeadlinePopup() {
+    if (dlPopupCurrent || anyModalOpen() || !LF()) return;
+    const list = LF().pendingDeadlinePopups(state.tasks.map(t => Object.assign({}, t, { _done: effectiveStatus(t) === 'completed' })), state.popupShown, Date.now());
+    if (!list.length) return;
+    const p = list[0];
+    dlPopupCurrent = p;
+    const el = document.getElementById('dlPopup');
+    el.querySelector('.dl-pop-th').textContent = DL_TEXT[p.threshold];
+    el.querySelector('.dl-pop-title').textContent = p.title;
+    el.querySelector('.dl-pop-at').textContent = '期限 ' + (formatDeadline(p.deadline) || '');
+    const cdEl = document.getElementById('dlPopCd'); cdEl.setAttribute('data-cd', p.deadline);
+    cdEl.textContent = countdownInfo(p.deadline)?.text || '';
+    el.querySelector('.dl-pop-more').textContent = list.length > 1 ? 'ほか ' + (list.length - 1) + ' 件あります' : '';
+    el.classList.add('show');
+    playSound(p.threshold === 'over' ? 'fail' : 'click');
+  }
+  function closeDeadlinePopup(open) {
+    const p = dlPopupCurrent;
+    if (!p) return;
+    LF().markPopupShown(state.popupShown, p.id, p.threshold);
+    save();
+    dlPopupCurrent = null;
+    closeModal('dlPopup');
+    if (open) { selectedId = p.id; switchTab('tasks'); renderTasks(); scrollToDetail(); }
+    setTimeout(maybeShowDeadlinePopup, 300);
+  }
+  function scrollToDetail() {
+    const b = document.querySelector('#screenTasks .screen-body');
+    const d = document.getElementById('taskDetail');
+    if (b && d) b.scrollTop += d.getBoundingClientRect().top - b.getBoundingClientRect().top - 4;
+  }
+
+  // --- A. 寝過ごしリカバリー（今日の立て直し） ---
+  function overdueDoseMinutes() {
+    const now = new Date(); const nm = now.getHours() * 60 + now.getMinutes();
+    return medDoseRows().filter(r => !r.done && r.hhmm).map(r => { const [h, m] = r.hhmm.split(':').map(Number); return nm - (h * 60 + m); }).filter(x => x > 0);
+  }
+  function maybeShowRecovery(force) {
+    if (!LF()) return false;
+    const show = force || LF().shouldShowRecovery(Date.now(), state.lifeMeta, overdueDoseMinutes());
+    state.lifeMeta.lastOpenDay = todayKey();
+    if (!show) { save(); return false; }
+    state.lifeMeta.recoveryShownDay = todayKey();
+    save();
+    renderRecovery();
+    // 他の警告より手前に出す
+    ['bathStreakPopup', 'choreWarnPopup'].forEach(id => document.getElementById(id)?.classList.remove('show'));
+    document.getElementById('recoveryModal').classList.add('show');
+    return true;
+  }
+  function renderRecovery() {
+    const plan = LF().recoveryPlan(state.tasks.map(t => Object.assign({}, t, { _done: effectiveStatus(t) === 'completed' })), Date.now());
+    const req = state.tasks.filter(t => (isSystemTask(t) && !t.isMedDaily || t.isDailyRequired) && effectiveStatus(t) === 'in_progress');
+    const row = (t, extra) => `<div class="rc-row">${extra||''}<span class="rc-title">${esc(t.title)}</span></div>`;
+    let h = '<p class="rc-lead">今からできる分だけで大丈夫です。順番に1つずつ進めましょう。</p>';
+    if (plan.strict.length) {
+      h += '<div class="rc-sec rc-red">期限付き（このまま・変更なし）</div>';
+      h += plan.strict.map(t => `<div class="rc-row rc-strict"><span class="rc-title">${esc(t.title)}</span>${countdownHtml(t)}</div>`).join('');
+    }
+    if (req.length) {
+      h += '<div class="rc-sec">今日の必須</div>' + req.map(t => row(t)).join('');
+    }
+    h += '<div class="rc-sec">期限なし（後回しにできます）</div>';
+    h += plan.movable.length ? plan.movable.map(t => `<div class="rc-row"><span class="rc-title">${esc(t.title)}</span>
+      <span class="rc-btns"><button class="btn btn-sm" data-rc-snooze="${t.id}" data-when="later">今日の後で</button><button class="btn btn-sm" data-rc-snooze="${t.id}" data-when="tomorrow">明日</button></span></div>`).join('')
+      : '<div class="empty small">なし</div>';
+    if (plan.snoozed.length) {
+      h += '<div class="rc-sec">後回し中</div>' + plan.snoozed.map(t => `<div class="rc-row"><span class="rc-title">${esc(t.title)}</span><span class="li-meta">${esc(snoozeLabel(t.snoozeUntil))}〜</span></div>`).join('');
+    }
+    document.getElementById('recoveryBody').innerHTML = h;
+  }
+
+  // --- C. 体調ログ ---
+  const MOODS = [['good', '良い'], ['ok', '普通'], ['hard', 'しんどい']];
+  const HEALTH_TAGS = ['頭痛', '眠気', '喉', 'だるさ'];
+  let healthDraft = null;
+  function openHealthModal(context) {
+    healthDraft = { mood: null, tags: [], context: context || '' };
+    document.getElementById('healthMemo').value = context && context !== '服薬' ? context + ': ' : '';
+    renderHealthModal();
+    openModal('healthModal');
+  }
+  function renderHealthModal() {
+    const d = healthDraft;
+    document.getElementById('healthMoods').innerHTML = MOODS.map(([k, l]) => `<button class="btn chip ${d.mood===k?'btn-on':''}" data-mood="${k}">${l}</button>`).join('');
+    document.getElementById('healthTags').innerHTML = HEALTH_TAGS.map(tg => `<button class="btn btn-sm chip ${d.tags.includes(tg)?'btn-on':''}" data-htag="${esc(tg)}">${esc(tg)}</button>`).join('');
+    document.getElementById('healthCtx').textContent = d.context ? 'きっかけ: ' + d.context : '';
+    document.getElementById('healthCtx').style.display = d.context ? '' : 'none';
+    const label = Object.fromEntries(MOODS);
+    const hist = LF().healthHistory(state.healthLog, Date.now(), 7);
+    document.getElementById('healthHistory').innerHTML = hist.map(x => {
+      const dd = x.day.slice(5).replace('-', '/') + '（' + WEEKDAY_NAMES[weekdayOfKey(x.day)] + '）';
+      const body = x.entries.length ? x.entries.map(e => {
+        const t = new Date(e.ts); const hm = pad2(t.getHours()) + ':' + pad2(t.getMinutes());
+        return `<div class="hh-entry"><span class="hh-mood m-${e.mood}">${esc(label[e.mood]||e.mood)}</span> <span class="li-meta">${hm}</span> ${esc((e.tags||[]).join('・'))}${e.memo?'<div class="hh-memo">'+esc(e.memo)+'</div>':''}</div>`;
+      }).join('') : '<span class="li-meta">記録なし</span>';
+      return `<div class="hh-day"><div class="hh-date">${dd}</div><div>${body}</div></div>`;
+    }).join('');
+  }
+  function saveHealth() {
+    if (!healthDraft.mood) { toast('調子を1つ選んでください'); return; }
+    const memo = document.getElementById('healthMemo').value.trim();
+    state.healthLog.push({ id: uid(), ts: Date.now(), day: todayKey(), mood: healthDraft.mood, tags: healthDraft.tags.slice(), memo, context: healthDraft.context });
+    if (state.healthLog.length > 2000) state.healthLog = state.healthLog.slice(-2000);
+    save(); playSound('check'); toast('体調を記録しました');
+    healthDraft = { mood: null, tags: [], context: healthDraft.context };
+    document.getElementById('healthMemo').value = '';
+    renderHealthModal();
+  }
+
+  // --- 未達・失敗 / 後でやる ---
+  let failTaskId = null;
+  function openFailModal(task, snoozeOnly) {
+    failTaskId = task.id;
+    const canS = LF().canSnooze(task);
+    document.getElementById('failTitle').textContent = task.title;
+    document.getElementById('failNote').value = '';
+    document.getElementById('failHead').textContent = snoozeOnly ? '後でやる' : (task.deadline ? '失敗にする' : '未達・後でやる');
+    document.getElementById('failMsg').textContent = task.deadline
+      ? '期限付きの任務は後回しにできません。失敗にすると記録に残ります（あとで再開できます）。'
+      : 'いつやるかを選べます。期限はないので、失敗にしなくても大丈夫です。';
+    document.getElementById('failSnoozeRow').style.display = canS ? '' : 'none';
+    document.getElementById('btnFailConfirm').style.display = snoozeOnly ? 'none' : '';
+    document.getElementById('failNoteGroup').style.display = snoozeOnly ? 'none' : '';
+    openModal('failModal');
+  }
+  function failNoteToTask(tk) {
+    const note = document.getElementById('failNote').value.trim();
+    if (note) { tk.notes = tk.notes || []; tk.notes.push({ ts: Date.now(), text: note }); }
+  }
+
+  // --- E. 月末の振り返り ---
+  let monthOffset = 0;
+  function renderMonth() {
+    const base = new Date(); base.setDate(1); base.setMonth(base.getMonth() + monthOffset);
+    const ym = base.getFullYear() + '-' + pad2(base.getMonth() + 1);
+    const isCur = monthOffset === 0;
+    const dim = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+    const dosesPerDay = state.medications.filter(m => m.enabled !== false).reduce((n, m) => n + (m.times || []).length, 0);
+    const s = LF().monthlySummary(state, ym, { dosesPerDay, daysElapsed: isCur ? new Date().getDate() : dim });
+    const r = (label, v) => `<div class="mo-row"><span>${label}</span><span class="mo-v">${v}</span></div>`;
+    const lg = x => x.total ? x.done + ' 回（記録 ' + x.total + ' 日）' : '記録なし';
+    const ml = Object.fromEntries(MOODS);
+    document.getElementById('monthLabel').textContent = base.getFullYear() + '年' + (base.getMonth() + 1) + '月' + (isCur ? '（途中）' : '');
+    document.getElementById('monthBody').innerHTML =
+      '<div class="rc-sec">任務（自分で追加したもの）</div>' +
+      r('達成', s.tasks.done) + r('失敗', s.tasks.failed) + r('進行中', s.tasks.open) +
+      r('達成率（達成÷(達成+失敗)）', s.tasks.rate == null ? '—' : s.tasks.rate + '%') +
+      '<div class="rc-sec">生活ルーチン</div>' +
+      r('入浴', lg(s.bath)) + r('洗濯', lg(s.laundry)) + r('掃除', lg(s.clean)) + r('ゴミ出し', lg(s.trash)) +
+      r('毎日の必須タスク', s.daily.total ? s.daily.done + ' / ' + s.daily.total : '記録なし') +
+      '<div class="rc-sec">服薬チェック</div>' +
+      r('チェックした回数', s.meds.checked + (s.meds.planned ? ' / 登録上 ' + s.meds.planned + ' 回' : '')) +
+      '<div class="rc-sec">体調ログ</div>' +
+      r('記録数', s.health.total) + MOODS.map(([k, l]) => r('　' + l, s.health.byMood[k] || 0)).join('') +
+      '<p class="hint" style="margin-top:10px">数字は端末内の記録から数えただけのものです。記録をつけていない日は数に入りません。</p>';
+  }
+
+  // --- D. MacroDroid 連携 ---
+  function upcomingTimed() {
+    const now = Date.now(); const items = [];
+    const at = (dayOffset, hhmm) => { const [h, m] = hhmm.split(':').map(Number); const d = new Date(); d.setDate(d.getDate() + dayOffset); d.setHours(h, m, 0, 0); return d.getTime(); };
+    const medTask = state.tasks.find(t => t.isMedDaily);
+    [0, 1].forEach(off => {
+      state.medications.filter(m => m.enabled !== false).forEach(med => (med.times || []).forEach(tm => {
+        const n = normalizeTimeLabel(tm); if (!n.hhmm) return;
+        if (off === 0 && isMedTaken(med.id, n.key)) return;
+        items.push({ id: 'med-' + med.id + '-' + n.key + (off ? '-tmr' : ''), title: '服薬: ' + med.name + (med.dose ? ' ' + med.dose : ''), type: 'med', at: at(off, n.hhmm), taskId: medTask ? medTask.id : 'med' });
+      }));
+      (state.dailyRequired || []).filter(d => d.enabled !== false && d.time).forEach(def => {
+        const hhmm = canonicalizeTimeToken(def.time); if (!hhmm) return;
+        const t = state.tasks.find(x => x.isDailyRequired && x.dailyId === def.id);
+        if (off === 0 && t && effectiveStatus(t) === 'completed') return;
+        items.push({ id: 'daily-' + def.id + (off ? '-tmr' : ''), title: def.title, type: 'daily', at: at(off, hhmm), taskId: t ? t.id : def.id });
+      });
+    });
+    state.tasks.forEach(t => {
+      if (!t.deadline || isSystemTask(t) || effectiveStatus(t) === 'completed' || t.status === 'pending_review') return;
+      const dl = Date.parse(t.deadline); if (isNaN(dl)) return;
+      items.push({ id: 'dl-' + t.id, title: '期限: ' + t.title, type: 'deadline', at: dl, taskId: t.id });
+      if (dl - 3 * 3600e3 > now) items.push({ id: 'dl3h-' + t.id, title: '期限3時間前: ' + t.title, type: 'deadline-3h', at: dl - 3 * 3600e3, taskId: t.id });
+      if (t.start) { const st = Date.parse(t.start); if (!isNaN(st)) items.push({ id: 'start-' + t.id, title: '予定: ' + t.title, type: 'event', at: st, taskId: t.id }); }
+    });
+    return LF().buildSchedule(items, now, location.origin + location.pathname, 48);
+  }
+  function renderMacro() {
+    const list = upcomingTimed();
+    document.getElementById('macroJson').value = JSON.stringify(list, null, 1);
+    document.getElementById('macroText').value = list.map(x => x.time.replace('T', ' ') + '  ' + x.title + '  ' + x.url).join('\n') || '（48時間以内の時刻つき項目はありません）';
+    document.getElementById('macroCount').textContent = list.length + ' 件（今から48時間）';
+  }
+  async function copyText(txt) {
+    try { await navigator.clipboard.writeText(txt); toast('コピーしました'); }
+    catch (_) { toast('コピーできませんでした。長押しで選択してください'); }
+  }
+
+  // --- deep link: #/alarm?id=... / #/task?id=... ---
+  function handleDeepLink() {
+    const dl = LF() && LF().parseDeepLink(location.hash);
+    if (!dl) return false;
+    let t = getTask(dl.id);
+    if (!t && (dl.id === 'med' || dl.id.startsWith('med-'))) t = state.tasks.find(x => x.isMedDaily);
+    if (!t) t = state.tasks.find(x => x.isDailyRequired && x.dailyId === dl.id);
+    if (!t) { toast('該当の任務が見つかりません'); return false; }
+    document.querySelectorAll('.modal-backdrop.show').forEach(m => m.classList.remove('show'));
+    dlPopupCurrent = null;
+    selectedId = t.id;
+    switchTab('tasks'); renderTasks();
+    setTimeout(scrollToDetail, 50);
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {}
+    return true;
+  }
+
+  function bindLife() {
+    document.getElementById('taskList').addEventListener('click', e => {
+      const b = e.target.closest('[data-open-health]'); if (b) openHealthModal(b.getAttribute('data-open-health') || '');
+    });
+    const dl = document.getElementById('dlPopup');
+    dl.addEventListener('click', e => {
+      if (e.target.closest('[data-dlpop-open]')) closeDeadlinePopup(true);
+      else if (e.target === dl || e.target.closest('[data-dlpop-close]')) closeDeadlinePopup(false);
+    });
+    document.getElementById('recoveryModal').addEventListener('click', e => {
+      const b = e.target.closest('[data-rc-snooze]');
+      if (b) { const t = getTask(b.getAttribute('data-rc-snooze')); if (t && snoozeTask(t, b.getAttribute('data-when'))) { playSound('click'); renderRecovery(); } return; }
+      if (e.target.closest('[data-rc-close]')) { closeModal('recoveryModal'); renderTasks(); setTimeout(maybeShowDeadlinePopup, 300); }
+    });
+    document.getElementById('healthModal').addEventListener('click', e => {
+      const m = e.target.closest('[data-mood]'); if (m) { healthDraft.mood = m.getAttribute('data-mood'); playSound('click'); renderHealthModal(); return; }
+      const tg = e.target.closest('[data-htag]'); if (tg) { const v = tg.getAttribute('data-htag'); const i = healthDraft.tags.indexOf(v); if (i >= 0) healthDraft.tags.splice(i, 1); else healthDraft.tags.push(v); renderHealthModal(); return; }
+      if (e.target.closest('#btnHealthSave')) saveHealth();
+    });
+    document.getElementById('failModal').addEventListener('click', e => {
+      const tk = failTaskId && getTask(failTaskId); if (!tk) return;
+      const sb = e.target.closest('[data-fail-snooze]');
+      if (sb) { failNoteToTask(tk); if (snoozeTask(tk, sb.getAttribute('data-fail-snooze'))) { playSound('click'); closeModal('failModal'); renderTasks(); } return; }
+      if (e.target.closest('#btnFailConfirm')) {
+        if (effectiveStatus(tk) !== 'in_progress') { closeModal('failModal'); return; }
+        failNoteToTask(tk); tk.status = 'failed'; tk.failSoundPlayed = true;
+        save(); playSound('fail'); closeModal('failModal'); renderTasks(); return;
+      }
+      if (e.target.closest('#btnFailHealth')) { const title = tk.title; closeModal('failModal'); openHealthModal(title); }
+    });
+    document.getElementById('btnOpenRecovery').addEventListener('click', () => { closeModal('modalSettings'); maybeShowRecovery(true); });
+    document.getElementById('btnOpenMonth').addEventListener('click', () => { closeModal('modalSettings'); monthOffset = 0; renderMonth(); openModal('monthModal'); });
+    document.getElementById('btnMonthPrev').addEventListener('click', () => { monthOffset--; renderMonth(); });
+    document.getElementById('btnMonthNext').addEventListener('click', () => { if (monthOffset < 0) { monthOffset++; renderMonth(); } });
+    document.getElementById('btnOpenMacro').addEventListener('click', () => { closeModal('modalSettings'); renderMacro(); openModal('macroModal'); });
+    document.getElementById('btnCopyMacroJson').addEventListener('click', () => copyText(document.getElementById('macroJson').value));
+    document.getElementById('btnCopyMacroText').addEventListener('click', () => copyText(document.getElementById('macroText').value));
+    document.getElementById('btnCopyMacroLink').addEventListener('click', () => {
+      const t = selectedId && getTask(selectedId);
+      copyText(location.origin + location.pathname + '#/alarm?id=' + encodeURIComponent(t ? t.id : 'med'));
+    });
+    window.addEventListener('hashchange', handleDeepLink);
+  }
+
   async function init() {
     state = await loadStateAsync();
     selectedId = state.tasks.find(t => effectiveStatus(t) === 'in_progress')?.id
@@ -2329,6 +2632,10 @@
     updateDataLayerStatus();
     maybeShowBathStreakWarning(false);
     maybeShowChoreWarning(false);
+    bindLife();
+    if (!handleDeepLink()) {
+      if (!maybeShowRecovery(false)) setTimeout(maybeShowDeadlinePopup, 400);
+    }
 
     if (window.DataLayer && DataLayer.requestPersist) {
       DataLayer.requestPersist().then((ok) => {
@@ -2342,7 +2649,7 @@
       }).catch(err => console.warn('SW failed', err));
     }
 
-    setInterval(tickCountdowns, 1000);
+    setInterval(() => { tickCountdowns(); maybeShowDeadlinePopup(); }, 1000);
     setInterval(() => {
       const changed = checkDeadlines();
       // 日付・服薬の時刻超過・期限の色を定期反映（モーダル表示中は再描画しない）

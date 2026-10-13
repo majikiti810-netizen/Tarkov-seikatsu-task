@@ -214,6 +214,12 @@
         <button class="btn" id="btnOpenMedSettings" style="width:100%">服薬設定（薬の登録・時刻・通知）</button>
       </div>
       <div class="form-group">
+        <label>生活サポート</label>
+        <button class="btn" id="btnOpenRecovery" style="width:100%;margin-bottom:6px">今日の立て直しを開く</button>
+        <button class="btn" id="btnOpenMonth" style="width:100%;margin-bottom:6px">月末の振り返り</button>
+        <button class="btn" id="btnOpenMacro" style="width:100%">MacroDroid連携（アラーム用の予定一覧）</button>
+      </div>
+      <div class="form-group">
         <label>エクスポート</label>
         <button class="btn btn-primary" id="btnExport" style="width:100%">JSON を保存</button>
       </div>
@@ -232,7 +238,98 @@
   </div>
 </div>
 
+
+<div class="modal-backdrop dl-pop-backdrop" id="dlPopup">
+  <div class="modal dl-pop-modal">
+    <div class="modal-header"><h3>WARNING // 期限</h3><button class="btn btn-icon" data-dlpop-close>✕</button></div>
+    <div class="modal-body" style="text-align:center">
+      <div class="banner bad show dl-pop-th" style="margin:6px 0">期限まで3時間を切りました</div>
+      <div class="dl-pop-title"></div>
+      <div class="dl-pop-cdwrap"><span id="dlPopCd" class="cd cd-red cd-big" data-cd=""></span></div>
+      <div class="hint dl-pop-at" style="margin:4px 0 0"></div>
+      <div class="hint dl-pop-more" style="margin:4px 0 0"></div>
+    </div>
+    <div class="modal-footer" style="justify-content:center">
+      <button class="btn" data-dlpop-close>確認</button>
+      <button class="btn btn-primary" data-dlpop-open>任務を開く</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="recoveryModal">
+  <div class="modal">
+    <div class="modal-header"><h3>今日の立て直し</h3><button class="btn btn-icon" data-rc-close>✕</button></div>
+    <div class="modal-body" id="recoveryBody"></div>
+    <div class="modal-footer"><button class="btn btn-primary" data-rc-close>この内容で進める</button></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="healthModal">
+  <div class="modal">
+    <div class="modal-header"><h3>体調ログ</h3><button class="btn btn-icon" data-close="healthModal">✕</button></div>
+    <div class="modal-body">
+      <div class="hint" id="healthCtx"></div>
+      <div class="form-group"><label>いまの調子</label><div class="chip-row" id="healthMoods"></div></div>
+      <div class="form-group"><label>気になること（任意・複数可）</label><div class="chip-row" id="healthTags"></div></div>
+      <div class="form-group"><label>メモ（任意）</label><textarea id="healthMemo" maxlength="300" placeholder="自由にどうぞ"></textarea></div>
+      <button class="btn btn-primary" id="btnHealthSave" style="width:100%">記録する</button>
+      <div class="section-title" style="margin-top:14px">直近7日</div>
+      <div id="healthHistory"></div>
+    </div>
+    <div class="modal-footer"><button class="btn" data-close="healthModal">閉じる</button></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="failModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="failHead">未達・後でやる</h3><button class="btn btn-icon" data-close="failModal">✕</button></div>
+    <div class="modal-body">
+      <div class="dl-pop-title" id="failTitle" style="text-align:left"></div>
+      <p class="hint" id="failMsg"></p>
+      <div class="chip-row" id="failSnoozeRow">
+        <button class="btn btn-primary" data-fail-snooze="later">今日の後で（リスケ）</button>
+        <button class="btn btn-primary" data-fail-snooze="tomorrow">明日へ（リスケ）</button>
+      </div>
+      <div class="form-group" id="failNoteGroup" style="margin-top:12px"><label>備考（任意）</label><textarea id="failNote" maxlength="300" placeholder="例: 時間が足りなかった"></textarea></div>
+      <button class="btn btn-sm" id="btnFailHealth">♡ 体調ログもつける</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" data-close="failModal">やめる</button>
+      <button class="btn btn-danger" id="btnFailConfirm">失敗にする</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="monthModal">
+  <div class="modal">
+    <div class="modal-header"><h3>月末の振り返り</h3><button class="btn btn-icon" data-close="monthModal">✕</button></div>
+    <div class="modal-body">
+      <div class="month-nav"><button class="btn btn-sm" id="btnMonthPrev">◀</button><span id="monthLabel"></span><button class="btn btn-sm" id="btnMonthNext">▶</button></div>
+      <div id="monthBody"></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-primary" data-close="monthModal">閉じる</button></div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="macroModal">
+  <div class="modal">
+    <div class="modal-header"><h3>MacroDroid連携</h3><button class="btn btn-icon" data-close="macroModal">✕</button></div>
+    <div class="modal-body">
+      <p class="hint">今から48時間の「時刻つきの項目」（服薬・毎日の必須・期限・予定）です。コピーして MacroDroid のアラーム設定の参考にできます。各行のURLを開くと、その任務を直接表示します。手順は docs/MACRODROID.md。</p>
+      <div class="li-meta" id="macroCount"></div>
+      <div class="form-group"><label>一覧（テキスト）</label><textarea id="macroText" readonly rows="6"></textarea>
+        <button class="btn btn-sm" id="btnCopyMacroText" style="margin-top:4px">テキストをコピー</button></div>
+      <div class="form-group"><label>JSON {id,title,time,type,url}</label><textarea id="macroJson" readonly rows="6"></textarea>
+        <button class="btn btn-sm" id="btnCopyMacroJson" style="margin-top:4px">JSONをコピー</button></div>
+      <div class="form-group"><label>選択中の任務を直接開くリンク</label>
+        <button class="btn btn-sm" id="btnCopyMacroLink">リンクをコピー（#/alarm?id=…）</button></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-primary" data-close="macroModal">閉じる</button></div>
+  </div>
+</div>
+
 <script src="./data/adapter.js"></script>
+<script src="./features.js"></script>
 <script src="./parser.js"></script>
 <script src="./app.js"></script>
 </body>

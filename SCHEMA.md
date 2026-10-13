@@ -191,3 +191,16 @@
 - 複数行: 改行と行頭の `・ - * • ● 1. 1) ① (1)` で分割。「買い物:」見出しの下の行は買うもの、「持ち物:」や任務行の直後の名詞だけの行はその任務の持ち物。各項目に種類ボタンと「スキップ」。
 - 明日の日時が入った任務は、従来通り「入浴（前日必須）」判定の対象になる（毎日の必須タスクは対象外）。
 - テスト: `node tests/parse.test.mjs`
+
+## 端末内の追加データ（v9 / 2026-10-13、エクスポートJSONには未収録・アプリ内状態のみ）
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `healthLog` | `{id, ts, day:'YYYY-MM-DD', mood:'good'\|'ok'\|'hard', tags:string[], memo, context}`[] | 体調ログ（良い/普通/しんどい＋頭痛・眠気・喉・だるさ） |
+| `popupShown` | `{ [taskId]: ('24h'\|'3h'\|'over')[] }` | 期限の赤ポップアップ表示済みフラグ（1任務×1しきい値につき1回） |
+| `lifeMeta` | `{lastOpenDay, recoveryShownDay}` | 寝過ごしリカバリー（今日の立て直し）の1日1回判定 |
+| task.`snoozeUntil` | ISO \| 未設定 | 「後でやる」先。**期限なし・自分の任務のみ**（期限付き・システム・毎日の必須は不可） |
+| task.`notes` | `{ts, text}`[] | 未達・失敗時の備考 |
+| task.`completedAt` | ISO | 完了日時（月末の振り返り用） |
+
+ディープリンク: `#/alarm?id=<taskId>`（`#/task?id=` も可、`id=med` で服薬任務）。純粋ロジックは `features.js`（テスト: `node tests/features.test.mjs`）。

@@ -551,3 +551,31 @@ body::before {
 .med-item .obj-body { flex: 1; }
 .med-times { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .time-chip { font-family: var(--font-mono); font-size: 10px; padding: 1px 6px; border: 1px solid var(--olive-dim); color: var(--olive-bright); }
+
+/* Life support: 期限ポップアップ / 立て直し / 体調ログ / 振り返り */
+.dl-pop-backdrop { align-items: center; z-index: 120; }
+.dl-pop-modal { border: 1px solid var(--red); box-shadow: 0 0 24px rgba(196,90,74,0.45); }
+.dl-pop-modal .modal-header h3 { color: var(--red-bright); }
+.dl-pop-title { font-size: 16px; color: var(--text-bright); margin: 10px 0 6px; font-weight: 600; }
+.dl-pop-cdwrap { font-size: 20px; margin: 4px 0; }
+.rc-lead { font-size: 13px; color: var(--text); margin: 0 0 10px; }
+.rc-sec { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; color: var(--text-dim); margin: 12px 0 6px; }
+.rc-sec.rc-red { color: var(--red-bright); }
+.rc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--border); background: var(--bg-card); margin-bottom: 4px; font-size: 13px; }
+.rc-row.rc-strict { border-color: var(--red); border-left: 3px solid var(--red-bright); }
+.rc-title { flex: 1; min-width: 0; color: var(--text-bright); }
+.rc-btns { display: flex; gap: 4px; flex-shrink: 0; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip.btn-on { border-color: var(--olive-bright); color: var(--olive-bright); background: rgba(107,124,74,0.25); }
+.hh-day { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.hh-date { flex: 0 0 72px; font-family: var(--font-mono); color: var(--text-dim); }
+.hh-entry { margin-bottom: 3px; }
+.hh-mood { font-weight: 600; }
+.hh-mood.m-good { color: var(--olive-bright); } .hh-mood.m-ok { color: var(--text-bright); } .hh-mood.m-hard { color: var(--amber); }
+.hh-memo { color: var(--text-dim); white-space: pre-wrap; }
+.month-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; color: var(--text-bright); }
+.mo-row { display: flex; justify-content: space-between; padding: 6px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.mo-v { font-family: var(--font-mono); color: var(--text-bright); }
+#macroText, #macroJson { font-family: var(--font-mono); font-size: 11px; }
+.empty.small { padding: 8px; font-size: 12px; }
